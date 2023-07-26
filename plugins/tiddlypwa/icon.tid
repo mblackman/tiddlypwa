@@ -3,8 +3,7 @@ tags: $:/tags/Image
 type: image/svg+xml
 
 <!-- https://github.com/mozilla/fxemoji under CC-BY 4.0 -->
-<svg version="1.1" xmlns="http://www.w3.org/2000/svg" x="0px" y="0px"
-	 viewBox="0 0 512 512" enable-background="new 0 0 512 512">
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
 	<path fill="#C49270" d="M427.932,4.041H134.917c-1.925-0.15-3.865-0.25-5.829-0.25c-40.814,0-73.901,33.086-73.901,73.9
 		c0,1.986,0.08,3.952,0.234,5.898h-0.234v387.997c0,19.558,15.855,35.414,35.414,35.414h40.633v-81.18
 		c3.453,1.059,7.118,1.631,10.918,1.631h297.662c20.544,0,37.199-16.654,37.199-37.199V53.121
