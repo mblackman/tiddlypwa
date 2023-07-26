@@ -3,7 +3,7 @@
 	"title": "$:/plugins/valpackett/tiddlypwa",
 	"description": "Offline-first storage & sync solution",
 	"author": "Val Packett",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"core-version": ">=5.2.0",
 	"list": "readme license",
 	"source": "https://codeberg.org/valpackett/tiddlypwa",
