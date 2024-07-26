@@ -1,10 +1,10 @@
 steps:
   test:
-    image: denoland/deno:alpine-1.37.1
+    image: denoland/deno:alpine-1.45.2
     commands:
     - deno test
     - deno fmt --check
   client:
-    image: node:20-alpine
+    image: node:22-alpine
     commands:
-    - npx tiddlywiki@5.3.1 --build
+    - npx tiddlywiki@5.3.5 --build

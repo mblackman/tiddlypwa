@@ -2,51 +2,57 @@
   "version": "3",
   "packages": {
     "specifiers": {
-      "npm:@types/serviceworker": "npm:@types/serviceworker@0.0.68",
-      "npm:tw5-typed": "npm:tw5-typed@0.3.7"
+      "npm:@types/serviceworker": "npm:@types/serviceworker@0.0.89",
+      "npm:tw5-typed": "npm:tw5-typed@0.5.11"
     },
     "npm": {
-      "@types/codemirror@5.60.8": {
-        "integrity": "sha512-VjFgDF/eB+Aklcy15TtOTLQeMjTo07k7KAjql8OK5Dirr7a6sJY4T1uVBDuTVG9VEmn1uUsohOpYnVfgC6/jyw==",
+      "@types/codemirror@5.60.15": {
+        "integrity": "sha512-dTOvwEQ+ouKJ/rE9LT1Ue2hmP6H1mZv5+CCnNWu2qtiOe2LQa9lCprEY20HxiDmV/Bxh+dXjywmy5aKvoGjULA==",
         "dependencies": {
-          "@types/tern": "@types/tern@0.23.4"
+          "@types/tern": "@types/tern@0.23.9"
         }
       },
-      "@types/echarts@4.9.18": {
-        "integrity": "sha512-Qav4M1i1qmPemMywMnDGIbvIBB/9pdrDKLI1dyMho4Yz/ldCB3ry2zGeH0UhAhgmaoPgwYrCDo8xd1UeByz+rw==",
+      "@types/echarts@4.9.22": {
+        "integrity": "sha512-7Fo6XdWpoi8jxkwP7BARUOM7riq8bMhmsCtSG8gzUcJmFhLo387tihoBYS/y5j7jl3PENT5RxeWZdN9RiwO7HQ==",
         "dependencies": {
-          "@types/zrender": "@types/zrender@4.0.3"
+          "@types/zrender": "@types/zrender@4.0.6"
         }
       },
-      "@types/estree@1.0.1": {
-        "integrity": "sha512-LG4opVs2ANWZ1TJoKc937iMmNstM/d0ae1vNbnBvBhqCSezgVUOzcLCqbI5elV8Vy6WKwKjaqR+zO9VKirBBCA==",
+      "@types/estree@1.0.5": {
+        "integrity": "sha512-/kYRxGDLWzHOB7q+wtSUQlFrtcdUccpfy+X+9iMBpHK8QLLhx2wIPYuS5DYtR9Wa/YlZAbIovy7qVdB1Aq6Lyw==",
         "dependencies": {}
       },
-      "@types/node@18.16.18": {
-        "integrity": "sha512-/aNaQZD0+iSBAGnvvN2Cx92HqE5sZCPZtx2TsK+4nvV23fFe09jVDvpArXr2j9DnYlzuU9WuoykDDc6wqvpNcw==",
-        "dependencies": {}
-      },
-      "@types/serviceworker@0.0.68": {
-        "integrity": "sha512-/p+SnnDBB2liGDTYRir7+qIdYBjCPGK8TqgUnzmdr7NLTjgCG2z454Glc8CqLiqCivEtozPpEu10/2p/XkMVAg==",
-        "dependencies": {}
-      },
-      "@types/tern@0.23.4": {
-        "integrity": "sha512-JAUw1iXGO1qaWwEOzxTKJZ/5JxVeON9kvGZ/osgZaJImBnyjyn0cjovPsf6FNLmyGY8Vw9DoXZCMlfMkMwHRWg==",
+      "@types/node@20.14.12": {
+        "integrity": "sha512-r7wNXakLeSsGT0H1AU863vS2wa5wBOK4bWMjZz2wj+8nBx+m5PeIn0k8AloSLpRuiwdRQZwarZqHE4FNArPuJQ==",
         "dependencies": {
-          "@types/estree": "@types/estree@1.0.1"
+          "undici-types": "undici-types@5.26.5"
         }
       },
-      "@types/zrender@4.0.3": {
-        "integrity": "sha512-EPI269lkHNsObwILJ1k1z7znLjKyePuWRy/XKK0shSGpBb9cIX307arcwJV4+2NeZj5wEjN06r4D8yFv7sI06g==",
+      "@types/serviceworker@0.0.89": {
+        "integrity": "sha512-m5C1oHqOeFemS026Mx19vYWbkygiDcKqHsd33dIgLDgfTlowHawZFIGzHmSbx7o5t57dTjaJcMxB8lpWXfkiBQ==",
         "dependencies": {}
       },
-      "tw5-typed@0.3.7": {
-        "integrity": "sha512-p4l6wexi6dctWpSxW7D4lZqdFK7mIcNSO+JmHA/ShtL7LMyk4OkWN5pUlm6Ea27GCipOvQJbuPNk8LsKzh+N9g==",
+      "@types/tern@0.23.9": {
+        "integrity": "sha512-ypzHFE/wBzh+BlH6rrBgS5I/Z7RD21pGhZ2rltb/+ZrVM1awdZwjx7hE5XfuYgHWk9uvV5HLZN3SloevCAp3Bw==",
         "dependencies": {
-          "@types/codemirror": "@types/codemirror@5.60.8",
-          "@types/echarts": "@types/echarts@4.9.18",
-          "@types/node": "@types/node@18.16.18"
+          "@types/estree": "@types/estree@1.0.5"
         }
+      },
+      "@types/zrender@4.0.6": {
+        "integrity": "sha512-1jZ9bJn2BsfmYFPBHtl5o3uV+ILejAtGrDcYSpT4qaVKEI/0YY+arw3XHU04Ebd8Nca3SQ7uNcLaqiL+tTFVMg==",
+        "dependencies": {}
+      },
+      "tw5-typed@0.5.11": {
+        "integrity": "sha512-PflOF90UNXiemYg9KzaM2XIKAF0WqrrYBOa+1oP3P2eknEQJStzq6+71/i3TchRSQpaR1vtpd+qMAUNYmlm1WQ==",
+        "dependencies": {
+          "@types/codemirror": "@types/codemirror@5.60.15",
+          "@types/echarts": "@types/echarts@4.9.22",
+          "@types/node": "@types/node@20.14.12"
+        }
+      },
+      "undici-types@5.26.5": {
+        "integrity": "sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA==",
+        "dependencies": {}
       }
     }
   },
@@ -65,8 +71,6 @@
     "https://deno.land/std@0.192.0/async/tee.ts": "47e42d35f622650b02234d43803d0383a89eb4387e1b83b5a40106d18ae36757",
     "https://deno.land/std@0.192.0/collections/filter_values.ts": "5b9feaf17b9a6e5ffccdd36cf6f38fa4ffa94cff2602d381c2ad0c2a97929652",
     "https://deno.land/std@0.192.0/collections/without_all.ts": "a89f5da0b5830defed4f59666e188df411d8fece35a5f6ca69be6ca71a95c185",
-    "https://deno.land/std@0.192.0/crypto/timing_safe_equal.ts": "0fae34ee02264f309ae0b6e54e9746a7aba3996e5454903ed106967a7a9ef665",
-    "https://deno.land/std@0.192.0/dotenv/load.ts": "0636983549b98f29ab75c9a22a42d9723f0a389ece5498fe971e7bb2556a12e2",
     "https://deno.land/std@0.192.0/dotenv/mod.ts": "f5a8123741d1561ae8184a7f043bc097b15132c5171c651142b804b6dbc21853",
     "https://deno.land/std@0.192.0/encoding/ascii85.ts": "b87bc896283cc76adcb2d14b6c867c4951fddea8c5d27010f8c0e6f1617bb0d7",
     "https://deno.land/std@0.192.0/encoding/base64.ts": "144ae6234c1fbe5b68666c711dc15b1e9ee2aef6d42b3b4345bf9a6c91d70d0d",

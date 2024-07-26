@@ -2,7 +2,7 @@
 publish = "output"
 command = """
   mkdir notebook; curl -L https://github.com/valpackett/Notebook/archive/e2c61ccd6e9db5cfcbc77e54eccc8b5961da5831.tar.gz | tar -xvzf - -C notebook --strip-components=1 &&
-  TIDDLYWIKI_THEME_PATH=notebook/themes TIDDLYWIKI_PLUGIN_PATH=notebook/plugins npx tiddlywiki@5.3.1 --build
+  TIDDLYWIKI_THEME_PATH=notebook/themes TIDDLYWIKI_PLUGIN_PATH=notebook/plugins npx tiddlywiki@5.3.5 --build
 """
 
 [[headers]]

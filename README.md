@@ -18,5 +18,5 @@ https://tiddly.packett.cool
 Building the html files (assuming Notebook theme repo cloned in the listed directory):
 
 ```shell
-TIDDLYWIKI_THEME_PATH=$HOME/src/github.com/paul-rouse/Notebook/themes TIDDLYWIKI_PLUGIN_PATH=$HOME/src/github.com/paul-rouse/Notebook/plugins npx tiddlywiki@5.3.1 --build
+TIDDLYWIKI_THEME_PATH=$HOME/src/github.com/paul-rouse/Notebook/themes TIDDLYWIKI_PLUGIN_PATH=$HOME/src/github.com/paul-rouse/Notebook/plugins npx tiddlywiki@5.3.5 --build
 ```
