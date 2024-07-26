@@ -1,10 +1,25 @@
 title: UpdateInPlace
 tags: [[TiddlyPWA Docs]]
 
-You can drag and drop these into a running TiddlyPWA instance:
+To update TiddlyPWA, you can drag and drop these plugin tiddlers into a running TiddlyPWA instance:
 
-{{$:/core||$:/core/ui/Components/plugin-info}}
 {{$:/plugins/valpackett/tiddlypwa||$:/core/ui/Components/plugin-info}}
 {{$:/plugins/valpackett/web-app-manifest||$:/core/ui/Components/plugin-info}}
 
-And if you have app uploading to the sync server working, just import them and upload the app wiki and you have everything updated!
+Then confirm the import – and saving/uploading the app wiki will save it with updated TiddlyPWA. Basically, this is the same process as installing extra plugins.
+
+!! Updating TiddlyWiki core
+
+Just like with TiddlyPWA, you can drag & drop the TiddlyWiki core itself as a plugin:
+
+{{$:/core||$:/core/ui/Components/plugin-info}}
+
+However, you also need to make sure to update the bootstrap code tiddlers that aren't included in the plugin (just drag these links themselves):
+
+<<list-links "[prefix[$:/boot/]]">>
+
+…as sometimes they get changed in a TiddlyWiki update, and core code expects matching bootstrap code. For example, this has happened in version 5.3.4.
+
+Whenever a new TiddlyWiki release happens, you can drag these in from https://tiddlywiki.com itself instead of waiting for the TiddlyPWA docs to update core. You can find the plugin in the control panel and the bootstrap tiddlers in the sidebar (More → System).
+
+To make sure the update works, first download the app wiki with the applied updates using the "save it locally" button and try opening it from downloads! Once you've made sure that it doesn't crash on boot, go back to the save dialog and proceed with the upload.
