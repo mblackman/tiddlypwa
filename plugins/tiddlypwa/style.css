@@ -16,5 +16,5 @@ html body svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-d
 html body svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-syncing { visibility: hidden; fill: <<colour dirty-indicator>>; }
 html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-idle { visibility: hidden; }
 html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-syncing { visibility: visible; }
-html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic { animation: spin 1s infinite linear; }
+html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic { animation: spin 1s infinite linear; transform-box: fill-box; }
 @keyframes spin { to { transform: rotate(360deg); } }
