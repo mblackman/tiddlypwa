@@ -1,10 +1,9 @@
 steps:
   test:
-    image: denoland/deno:alpine-1.45.2
+    image: denoland/deno:alpine-1.45.4
     commands:
     - deno test
+    - DENO_FUTURE=1 deno test
+    - echo uwu | DENO_FUTURE=1 deno run server/hash-admin-password.ts
     - deno fmt --check
-  client:
-    image: node:22-alpine
-    commands:
-    - npx tiddlywiki@5.3.5 --build
+    - DENO_FUTURE=1 deno run --allow-env --allow-read --allow-write=output npm:tiddlywiki@5.3.5 --build

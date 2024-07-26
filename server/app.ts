@@ -73,7 +73,10 @@ function notifyMonitors(token: string, browserToken: string) {
 	// chan.close(); // -> Uncaught (in promise) BadResource: Bad resource ID ?!
 }
 
-function streamsponse(start: ReadableStreamDefaultControllerCallback<string>, init: ResponseInit | undefined) {
+// ReadableStreamDefaultControllerCallback is deprecated
+type CtrlCb<R> = (controller: ReadableStreamDefaultController<R>) => void | PromiseLike<void>;
+
+function streamsponse(start: CtrlCb<string>, init: ResponseInit | undefined) {
 	return new Response(new ReadableStream({ start }).pipeThrough(new TextEncoderStream()), init);
 }
 
