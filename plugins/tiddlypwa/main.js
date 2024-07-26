@@ -465,7 +465,9 @@ Formatted with `deno fmt`.
 						} else tid._is_skinny = true; // Lazy-load separate body
 					}
 					toAdd.push(tid);
-					if (cur % 100 == 0) this.modal.setFeedback(`<p>Decrypting tiddlers… (${Math.round(100*cur/toDecrypt.length)}%)</p>`);
+					if (cur % 100 == 0) {
+						this.modal.setFeedback(`<p>Decrypting tiddlers… (${Math.round(100 * cur / toDecrypt.length)}%)</p>`);
+					}
 					cur += 1;
 				} catch (e) {
 					this.logger.log('Title decryption failed for:', await b64enc(thash));

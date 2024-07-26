@@ -1,11 +1,9 @@
 {
 	"fmt": {
-		"options": {
-			"useTabs": true,
-			"lineWidth": 120,
-			"singleQuote": true,
-			"proseWrap": "preserve"
-		}
+		"useTabs": true,
+		"lineWidth": 120,
+		"singleQuote": true,
+		"proseWrap": "preserve"
 	},
 	"unstable": ["broadcast-channel"],
 	"imports": {
