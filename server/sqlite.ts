@@ -1,7 +1,7 @@
 /// <reference lib="deno.window" />
 
 import { Datastore, File, Tiddler, Wiki } from './data.d.ts';
-import { DB } from 'https://deno.land/x/sqlite@v3.8/mod.ts';
+import { DB } from 'https://deno.land/x/sqlite@v3.9.0/mod.ts';
 
 const sql = String.raw; // For tools/editors
 
