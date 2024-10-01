@@ -15,7 +15,7 @@ All you need is [[Deno|https://deno.com/]]. There are no moving parts like exter
 ADMIN_PASSWORD_HASH=Zn…PQ \
 	ADMIN_PASSWORD_SALT=q6…0o \
 	DB_PATH=/var/db/tiddly/pwa.db \
-	deno run --unstable --allow-env \
+	deno run --unstable-broadcast-channel --allow-env \
 	--allow-read=/var/db/tiddly --allow-write=/var/db/tiddly \
 	--allow-net=:8000 \
 	https://codeberg.org/valpackett/tiddlypwa/raw/branch/release/server/run.ts
@@ -57,7 +57,7 @@ The commands would look like this:
 
 ```
 deno compile -o tiddlypwa-sync-server \
-	--unstable --allow-env \
+	--unstable-broadcast-channel --allow-env \
 	--allow-read=/var/db/tiddly --allow-write=/var/db/tiddly \
 	--allow-net=:8000 \
 	https://codeberg.org/valpackett/tiddlypwa/raw/branch/release/server/run.ts

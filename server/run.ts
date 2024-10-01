@@ -6,7 +6,7 @@ import { SQLiteDatastore } from './sqlite.ts';
 import { TiddlyPWASyncApp } from './app.ts';
 
 export async function listen(args: any) {
-	if (!('BroadcastChannel' in globalThis)) throw new Error('Run Deno with --unstable!');
+	if (!('BroadcastChannel' in globalThis)) throw new Error('Run Deno with --unstable-broadcast-channel!');
 	const denv = args.dotenv ? await dotenv.load() : {};
 	const envvar = (name: string) => Deno.env.get(name) ?? denv[name];
 	const adminpwhash = (args.adminpwhash ?? envvar('ADMIN_PASSWORD_HASH'))?.trim();
