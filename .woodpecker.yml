@@ -1,9 +1,39 @@
+when:
+  - event: push
+
 steps:
-  test:
-    image: denoland/deno:alpine-1.45.4
+  - name: test
+    image: denoland/deno:alpine
+    pull: true
     commands:
-    - deno test
-    - DENO_FUTURE=1 deno test
-    - echo uwu | DENO_FUTURE=1 deno run server/hash-admin-password.ts
-    - deno fmt --check
-    - DENO_FUTURE=1 deno run --allow-env --allow-read --allow-write=output npm:tiddlywiki@5.3.5 --build
+      - deno test server
+      - echo uwu | deno run server/hash-admin-password.ts
+  - name: fmt
+    image: denoland/deno:alpine
+    commands:
+      - deno fmt --check --ignore="**/*.css" plugins server
+  - name: fetch_theme
+    image: alpine/curl
+    when:
+      - event: push
+        branch: release
+    commands:
+      - mkdir notebook
+      - curl -L https://github.com/valpackett/Notebook/archive/e2c61ccd6e9db5cfcbc77e54eccc8b5961da5831.tar.gz | tar -xvzf - -C notebook --strip-components=1
+  - name: build
+    image: denoland/deno:alpine
+    environment:
+      TIDDLYWIKI_THEME_PATH: notebook/themes
+      TIDDLYWIKI_PLUGIN_PATH: notebook/plugins
+    commands:
+      - deno run --allow-env --allow-read --allow-write=output npm:tiddlywiki@5.3.5 --build
+  - name: push
+    image: alpine/curl
+    when:
+      - event: push
+        branch: release
+    secrets:
+      - BUNNY_BUCKET
+      - BUNNY_KEY
+    commands:
+      - sh bunny.sh
