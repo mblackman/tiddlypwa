@@ -1,10 +1,20 @@
 title: $:/plugins/valpackett/tiddlypwa/upload-app-form
 
+\procedure input(tiddler,id,tag:input,default)
+<$tiddler tiddler=<<tiddler>> >
+<$edit-text inputActions=<<inputActions>> id=<<id>> tag=<<tag>> default=<<default>> />
+</$tiddler>
+\end
+
+\procedure inputActions()
+<$action-setfield text={{{ [<actionValue>trim[]] }}} />
+\end
+
 <div class="tc-control-panel">
 
 |tc-table-no-border tc-max-width tc-first-col-min-width|k
-| URL|<$edit-text id="tpwa-endpoint-url" tiddler="$:/temp/TiddlyPWAServerURL" tag="input" default="https://" /> |
-| Token|<$edit-text tiddler="$:/temp/TiddlyPWAServerToken" tag="input" default="" /> |
+| URL|<<input  id:"tpwa-endpoint-url" tiddler:"$:/temp/TiddlyPWAServerURL" default:"https://" >> |
+| Token|<<input tiddler:"$:/temp/TiddlyPWAServerToken">> |
 | |<$button><$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/valpackett/tiddlypwa/app-filter}} uploadUrl={{$:/temp/TiddlyPWAServerURL}} uploadToken={{$:/temp/TiddlyPWAServerToken}} />Upload</$button> |
 
 </div>
