@@ -26,11 +26,15 @@ or use a unix domain socket passing the path as `--socket` (you'll need to both 
 
 You can pass the `--dotenv` flag to make the app read variables from a `.env` file (which is mostly used in development with the included file that contains a hash of the `test` password.)
 
+You can customize the location of the Deno module cache using the `DENO_DIR` environment variable.
+
 You really need to have TLS (HTTPS) working, so run this behind a reverse proxy like [[Caddy|https://caddyserver.com/]], [[H2O|https://h2o.examp1e.net/]] or [[Nginx|https://nginx.org/en/]].
 Caddy is famous for fully integrated [[automatic HTTPS|https://caddyserver.com/docs/automatic-https]] support, supporting [[Let's Encrypt|https://letsencrypt.org/]] on the public web as well working with [[Tailscale|https://tailscale.com/]]'s HTTPS support.
-(Also [[caddy-tailscale|https://github.com/tailscale/caddy-tailscale]] exists for hosting a bunch of as separate Tailscale hosts!)
+(Though [[Tailscale Serve|https://tailscale.com/kb/1312/serve]] can do basic TLS reverse proxying inside of tailscaled itself; also [[caddy-tailscale|https://github.com/tailscale/caddy-tailscale]] exists for hosting a bunch of as separate Tailscale hosts!)
 
 When running behind a reverse proxy that rewrites paths, you can customize the base path used for wiki using the `--basepath` flag. It should match the respective Caddy rewrite directive / H2O path / Nginx location, without a trailing backslash. By default, the server assumes no path rewriting takes place.
+
+If you're running Linux with systemd, see below for an example unit file.
 
 {{AfterServerHosting}}
 
@@ -45,8 +49,11 @@ To refresh the cached version of the server scripts, you can use this command:
 Thanks to Deno providing [[sandboxing|https://docs.deno.com/runtime/manual/basics/permissions]] by default, the server process does not get permission to access anything other than what was specified in the `--allow-*` flags.
 You can be confident that unless there's a horrible bug in the Deno runtime, the code is unable to touch anything outside of the database directory, nor is it able to contact external network services, nor launch processes.
 
-If you're paranoid enough to audit all the server code, you can use the [[deno info|https://docs.deno.com/runtime/manual/tools/dependency_inspector]] dependency inspector and/or [[deno vendor|https://docs.deno.com/runtime/manual/tools/vendor]] which conveniently places everything in a friendly directory tree instead of the cache, making it a lot more convenient to review.
-You can then add `--no-remote --import-map path/to/vendor/import_map.json` flags to the `deno run` invocation (and you can still refer to the URL!) to strongly guarantee that Deno will only run code from the directory you reviewed.
+If you're running it on Linux with systemd, systemd options can (and should) be used to enforce an additional layer of sandboxing.
+The example unit file below uses them.
+
+If you're paranoid enough to audit all the server code, you can use the [[deno info|https://docs.deno.com/runtime/manual/tools/dependency_inspector]] dependency inspector.
+You can also check out Deno's `--vendor` and `--cached-only` flags.
 
 !! Single-Binary Deployment
 
@@ -64,3 +71,56 @@ deno compile -o tiddlypwa-sync-server \
 
 ADMIN_PASSWORD_HASH=Zn…PQ ADMIN_PASSWORD_SALT=q6…0o DB_PATH=/var/db/tiddly/pwa.db ./tiddlypwa-sync-server
 ```
+
+!! Example systemd unit file
+
+```
+[Unit]
+Description=TiddlyPWA sync server
+Documentation=https://tiddly.packett.cool/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tiddlypwa
+Group=tiddlypwa
+DynamicUser=yes
+StateDirectory=tiddlypwa
+CacheDirectory=tiddlypwa
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateUsers=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectHostname=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectKernelTunables=yes
+ProtectClock=yes
+ProtectProc=noaccess
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+EnvironmentFile=/etc/tiddlypwa.env
+Environment=DB_PATH=/var/lib/tiddlypwa/pwa.db
+Environment=DENO_DIR=/var/cache/tiddlypwa/deno
+ExecStart=/usr/bin/deno --unstable-broadcast-channel --allow-env \
+        --allow-read=/var/lib/tiddlypwa --allow-write=/var/lib/tiddlypwa \
+        --allow-net=:7770 \
+        https://codeberg.org/valpackett/tiddlypwa/raw/branch/release/server/run.ts --port 7770
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Put the above into `/etc/systemd/system/tiddlypwa.service` and write the admin hash/salt variables to `/etc/tiddlypwa.env`.

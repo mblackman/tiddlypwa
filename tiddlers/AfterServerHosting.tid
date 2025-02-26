@@ -6,7 +6,7 @@ tags: [[TiddlyPWA Docs]]
 Opening the `/` home page of the hosted sync server will let you access the admin console with the admin password.
 There, you can create "wikis", i.e. storage slots that can store synchronized tiddlers ''and'' an app wiki, i.e. the TiddlyWiki HTML file with plugins and themes in it.
 
-Hosting the app wiki on the sync server is not obligatory, but ''highly recommend'' because it simplifies setup on multiple devices and allows easy plugin/theme installation.
+Hosting the app wiki on the sync server is not obligatory, but ''highly recommended'' because it simplifies setup on multiple devices and allows easy plugin/theme installation.
 
 Once you have created a storage slot, you get a token that you can use for syncing the tiddlers and uploading the app wiki.
 
