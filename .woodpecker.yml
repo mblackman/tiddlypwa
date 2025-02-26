@@ -32,8 +32,10 @@ steps:
     when:
       - event: push
         branch: release
-    secrets:
-      - BUNNY_BUCKET
-      - BUNNY_KEY
+    environment:
+      BUNNY_BUCKET:
+        from_secret: BUNNY_BUCKET
+      BUNNY_KEY:
+        from_secret: BUNNY_KEY
     commands:
       - sh bunny.sh
