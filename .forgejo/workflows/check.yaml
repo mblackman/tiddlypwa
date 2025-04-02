@@ -1,0 +1,22 @@
+---
+on:
+  push:
+    branches: [trunk]
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  test:
+    runs-on: val-arm64
+    steps:
+      - name: Checkout
+        uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Get Deno
+        run: curl -fsSL https://deno.land/install.sh | sh
+      - name: Run server tests
+        run: /root/.deno/bin/deno test server
+      - name: Try hash-admin-password
+        run: echo uwu | /root/.deno/bin/deno run server/hash-admin-password.ts
+      - name: Check client build
+        run: /root/.deno/bin/deno run --allow-env --allow-read --allow-write=output npm:tiddlywiki@5.3.5 --build
+      - name: Check formatting
+        run: /root/.deno/bin/deno fmt --check --ignore="**/*.css" plugins server

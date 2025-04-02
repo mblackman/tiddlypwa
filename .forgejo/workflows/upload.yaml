@@ -1,0 +1,22 @@
+---
+on:
+  push:
+    branches: [release]
+jobs:
+  test:
+    runs-on: val-arm64
+    steps:
+      - name: Checkout
+        uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Fetch theme
+        run: mkdir notebook && curl -L https://github.com/valpackett/Notebook/archive/e2c61ccd6e9db5cfcbc77e54eccc8b5961da5831.tar.gz | tar -xvzf - -C notebook --strip-components=1
+      - name: Build client
+        run: npx tiddlywiki@5.3.5 --build
+        env:
+          TIDDLYWIKI_THEME_PATH: notebook/themes
+          TIDDLYWIKI_PLUGIN_PATH: notebook/plugins
+      - name: Upload result
+        run: sh bunny.sh
+        env:
+          BUNNY_BUCKET: ${{ secrets.BUNNY_BUCKET }}
+          BUNNY_KEY: ${{ secrets.BUNNY_KEY }}
