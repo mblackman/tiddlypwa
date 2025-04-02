@@ -64,7 +64,7 @@ function supportsEncoding(headers: Headers, enc: string): boolean {
 
 function processEtag(etag: Uint8Array, headers: Headers): [boolean, string] {
 	const supportsBrotli = supportsEncoding(headers, 'br');
-	return [supportsBrotli, '"' + base64.encode(etag) + (supportsBrotli ? '-b' : '-x') + '"'];
+	return [supportsBrotli, '"' + base64.encode(etag.buffer as ArrayBuffer) + (supportsBrotli ? '-b' : '-x') + '"'];
 }
 
 function notifyMonitors(token: string, browserToken: string) {
@@ -132,11 +132,11 @@ export class TiddlyPWASyncApp {
 					// console.log('ServHas', base64nourl.encode(thash as Uint8Array), mtime, modsince, mtime < modsince);
 					ctrl.enqueue(
 						(firstWritten ? '\n,' : '\n') + JSON.stringify({
-							thash: thash ? base64nourl.encode(thash as Uint8Array) : null,
-							iv: iv ? base64nourl.encode(iv as Uint8Array) : null,
-							ct: ct ? base64nourl.encode(ct as Uint8Array) : null,
-							sbiv: sbiv ? base64nourl.encode(sbiv as Uint8Array) : null,
-							sbct: sbct ? base64nourl.encode(sbct as Uint8Array) : null,
+							thash: thash ? base64nourl.encode(thash.buffer as ArrayBuffer) : null,
+							iv: iv ? base64nourl.encode(iv.buffer as ArrayBuffer) : null,
+							ct: ct ? base64nourl.encode(ct.buffer as ArrayBuffer) : null,
+							sbiv: sbiv ? base64nourl.encode(sbiv.buffer as ArrayBuffer) : null,
+							sbct: sbct ? base64nourl.encode(sbct.buffer as ArrayBuffer) : null,
 							mtime,
 							deleted,
 						}),
@@ -174,7 +174,7 @@ export class TiddlyPWASyncApp {
 		if (note !== undefined && typeof note !== 'string') {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		const token = base64.encode(crypto.getRandomValues(new Uint8Array(32)));
+		const token = base64.encode(crypto.getRandomValues(new Uint8Array(32)).buffer);
 		this.db.createWiki(token, note);
 		return Response.json({ token }, { headers: respHdrs, status: 201 });
 	}
