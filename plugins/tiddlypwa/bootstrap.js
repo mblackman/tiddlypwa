@@ -15,7 +15,7 @@ Formatted with `deno fmt`.
 	const dm = $tw.utils.domMaker;
 
 	module.exports.BootstrapModal = class {
-		wrapper = dm('div', { class: 'tc-modal-wrapper', style: { 'z-index': 1500 } }); // below alerts, above hide-sidebar-btn
+		wrapper = dm('div', { class: 'tc-modal-wrapper', style: { 'z-index': 4000 } }); // below alerts, above hide-sidebar-btn and others (e.g. side panel in Notebook theme has z-index=3000)
 		constructor() {
 			$tw.utils.addClass(document.body, 'tc-modal-prevent-scroll');
 			this.wrapper.appendChild(dm('div', { class: 'tc-modal-backdrop' }));
