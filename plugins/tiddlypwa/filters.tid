@@ -1,0 +1,11 @@
+title: $:/plugins/valpackett/tiddlypwa/filters
+
+!!! Filter Operators
+
+TiddlyPWA provides filter operator to identify tiddlers it manages:
+
+* `[is[tiddlypwa]]` - tiddlers created/loaded by TiddlyPWA (from local DB or server)
+* `[!is[tiddlypwa]]` - inversion of the above, i.e. tiddlers loaded from app wiki html file
+
+This may be useful to find system tiddlers created by you, or to check shadow tiddler origins
+(app file vs DB/server) or when exporting (to e.g. backup everything stored on server including system tiddlers).
