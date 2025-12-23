@@ -282,7 +282,7 @@ export class TiddlyPWASyncApp {
 	@route(['GET', 'HEAD', 'OPTIONS'], '/:halftoken/:filename')
 	handleAppFile(req: Request, { halftoken, filename }: Record<string, string>) {
 		const wiki = this.db.getWikiByPrefix(halftoken);
-		if (!wiki) {
+		if (!wiki || halftoken.length < 22) {
 			return Response.json({ error: 'EEXIST' }, { headers: respHdrs, status: 404 });
 		}
 		if (req.method === 'OPTIONS') {
