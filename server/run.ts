@@ -9,7 +9,16 @@ export async function listen(args: any) {
 	const adminpwhash = (args.adminpwhash ?? envvar('ADMIN_PASSWORD_HASH'))?.trim();
 	const adminpwsalt = (args.adminpwsalt ?? envvar('ADMIN_PASSWORD_SALT'))?.trim();
 	const basepath = args.basepath ?? envvar('BASE_PATH') ?? '';
-	const db = new SQLiteDatastore(args.db ?? envvar('DB_PATH') ?? '.data/tiddly.db');
+	const dbPath = args.db ?? envvar('DB_PATH') ?? '.data/tiddly.db';
+	const lastSlash = dbPath.lastIndexOf('/');
+	if (lastSlash > 0) {
+		try {
+			Deno.mkdirSync(dbPath.slice(0, lastSlash), { recursive: true });
+		} catch (_e) {
+			// directory may already exist or cannot be created
+		}
+	}
+	const db = new SQLiteDatastore(dbPath);
 	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath);
 
 	const socketPath = args.socket ?? envvar('SOCKET');

@@ -1,0 +1,11 @@
+.git
+.github
+.forgejo
+.data
+.env
+output
+tiddlers
+plugins
+tiddlywiki.info
+bunny.sh
+*.md

@@ -1,0 +1,17 @@
+services:
+  tiddlypwa:
+    build: .
+    image: ghcr.io/mblackman/tiddlypwa:latest
+    container_name: tiddlypwa
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH}
+      - ADMIN_PASSWORD_SALT=${ADMIN_PASSWORD_SALT}
+      - DB_PATH=/data/pwa.db
+    volumes:
+      - tiddly_data:/data
+
+volumes:
+  tiddly_data:
