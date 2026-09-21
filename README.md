@@ -16,6 +16,18 @@ This repository is an actively maintained fork of [Val Packett's TiddlyPWA](http
 - **Multi-Wiki / Multi-Tenant Support**: Manage multiple independent notebooks using unique sync tokens on a single backend instance without data overlap.
 - **Conflict Resolution**: Gracefully detects out-of-order writes and concurrent edits across multiple devices, offering visual banners and resolution workflows.
 
+## Architecture & Design Documentation
+
+Comprehensive technical specifications and architecture documentation are available in the [`docs/`](docs/) directory:
+
+- [**Documentation Hub & Index**](docs/README.md): Reader guide for humans and semantic mapping for AI/LLMs.
+- [**System Overview**](docs/architecture/overview.md): High-level topology, component model, runtime lifecycle, and offline PWA behavior.
+- [**Cryptography & Security**](docs/architecture/cryptography.md): Zero-knowledge model, Argon2id WASM, HKDF key expansion, 8-key AES-GCM wear-out mitigation, and padding obfuscation.
+- [**Synchronization Protocol**](docs/architecture/sync-protocol.md): JSON-RPC wire protocol (`POST /tid.dly`), SSE real-time sync, monotonic delta sync, and multi-tab Web Locks coordination.
+- [**Conflict Resolution**](docs/architecture/conflict-resolution.md): 4-way conflict matrix, content-aware deduplication, non-destructive resolution, and IndexedDB transaction decoupling.
+- [**Data Models & Schemas**](docs/architecture/data-models.md): SQLite v1/v2 schemas, client IndexedDB stores, and runtime `$:/status` registers.
+- [**Development & Operations**](docs/architecture/development-and-operations.md): Deno 2 tooling, standalone HTML compilation, Docker multi-arch containers, and production reverse proxying.
+
 ## Quick Start with Docker
 
 The fastest way to deploy the TiddlyPWA sync server is using Docker or Docker Compose.
@@ -130,7 +142,6 @@ npx tiddlywiki@5.3.5 --build
 ```
 
 Compiled assets are written to the `output/` directory.
-
 
 ## Credits & License
 
