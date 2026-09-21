@@ -5,10 +5,20 @@
 		"singleQuote": true,
 		"proseWrap": "preserve"
 	},
-	"unstable": ["broadcast-channel"],
 	"imports": {
-		"https://deno.land/std@0.159.0/": "https://deno.land/std@0.192.0/",
-		"https://deno.land/std@0.170.0/": "https://deno.land/std@0.192.0/",
-		"https://deno.land/std@0.186.0/": "https://deno.land/std@0.192.0/"
+		"@std/assert": "jsr:@std/assert@^1.0.0",
+		"@std/cli/parse-args": "jsr:@std/cli@^1.0.0/parse-args",
+		"@std/dotenv": "jsr:@std/dotenv@^0.225.0",
+		"@std/encoding/base64": "jsr:@std/encoding@^1.0.0/base64",
+		"@std/encoding/base64url": "jsr:@std/encoding@^1.0.0/base64url",
+		"argon2ian": "https://deno.land/x/argon2ian@2.0.0/src/argon2.ts",
+		"brotli": "https://deno.land/x/brotli@0.1.7/mod.ts",
+		"cliffy/prompt/secret": "https://deno.land/x/cliffy@v0.25.7/prompt/secret.ts",
+		"sqlite": "https://deno.land/x/sqlite@v3.9.0/mod.ts"
+	},
+	"lint": {
+		"rules": {
+			"exclude": ["no-explicit-any"]
+		}
 	}
 }

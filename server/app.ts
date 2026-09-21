@@ -1,9 +1,7 @@
-/// <reference lib="deno.window" />
-/// <reference lib="deno.unstable" />
-import * as base64 from 'https://deno.land/std@0.192.0/encoding/base64url.ts';
-import * as base64nourl from 'https://deno.land/std@0.192.0/encoding/base64.ts';
-import * as argon from 'https://deno.land/x/argon2ian@2.0.0/src/argon2.ts';
-import * as brotli from 'https://deno.land/x/brotli@0.1.7/mod.ts';
+import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url';
+import { decodeBase64, encodeBase64 } from '@std/encoding/base64';
+import * as argon from 'argon2ian';
+import * as brotli from 'brotli';
 import { homePage } from './pages.ts';
 import { Datastore, Wiki } from './data.d.ts';
 
@@ -15,7 +13,7 @@ function route(methods: string[], pathname: string) {
 	const pat = new URLPattern({ pathname });
 	const methodSet = new Set(methods);
 	const allow = methods.join(', ');
-	return function (orig: any, context: ClassMethodDecoratorContext) {
+	return function (orig: any, _context: ClassMethodDecoratorContext) {
 		return function (this: any, req: Request) {
 			const match = pat.exec(req.url);
 			if (!match) return null;
@@ -25,7 +23,7 @@ function route(methods: string[], pathname: string) {
 	};
 }
 
-function adminAuth(orig: any, context: ClassMethodDecoratorContext) {
+function adminAuth(orig: any, _context: ClassMethodDecoratorContext) {
 	return function (this: any, data: Record<string, unknown>) {
 		if (typeof data.atoken !== 'string') {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
@@ -38,7 +36,7 @@ function adminAuth(orig: any, context: ClassMethodDecoratorContext) {
 }
 
 function getWiki(error: string) {
-	return function (orig: any, context: ClassMethodDecoratorContext) {
+	return function (orig: any, _context: ClassMethodDecoratorContext) {
 		return function (this: any, data: Record<string, unknown>, ...args: unknown[]) {
 			if (typeof data.token !== 'string') {
 				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
@@ -64,7 +62,7 @@ function supportsEncoding(headers: Headers, enc: string): boolean {
 
 function processEtag(etag: Uint8Array, headers: Headers): [boolean, string] {
 	const supportsBrotli = supportsEncoding(headers, 'br');
-	return [supportsBrotli, '"' + base64.encode(etag.buffer as ArrayBuffer) + (supportsBrotli ? '-b' : '-x') + '"'];
+	return [supportsBrotli, '"' + encodeBase64Url(etag) + (supportsBrotli ? '-b' : '-x') + '"'];
 }
 
 function notifyMonitors(token: string, browserToken: string) {
@@ -88,8 +86,8 @@ export class TiddlyPWASyncApp {
 
 	constructor(db: Datastore, adminpwsalt: string, adminpwhash: string, basepath: string = '') {
 		this.db = db;
-		this.adminpwsalt = base64.decode(adminpwsalt);
-		this.adminpwhash = base64.decode(adminpwhash);
+		this.adminpwsalt = decodeBase64Url(adminpwsalt);
+		this.adminpwhash = decodeBase64Url(adminpwhash);
 		this.basepath = basepath;
 	}
 
@@ -129,14 +127,14 @@ export class TiddlyPWASyncApp {
 				if (!(wiki as Wiki).salt && salt) this.db.updateWikiSalt(token, salt as string);
 				let firstWritten = false;
 				for (const { thash, iv, ct, sbiv, sbct, mtime, deleted } of this.db.tiddlersChangedSince(token, modsince)) {
-					// console.log('ServHas', base64nourl.encode(thash as Uint8Array), mtime, modsince, mtime < modsince);
+					// console.log('ServHas', encodeBase64(thash as Uint8Array), mtime, modsince, mtime < modsince);
 					ctrl.enqueue(
 						(firstWritten ? '\n,' : '\n') + JSON.stringify({
-							thash: thash ? base64nourl.encode(thash.buffer as ArrayBuffer) : null,
-							iv: iv ? base64nourl.encode(iv.buffer as ArrayBuffer) : null,
-							ct: ct ? base64nourl.encode(ct.buffer as ArrayBuffer) : null,
-							sbiv: sbiv ? base64nourl.encode(sbiv.buffer as ArrayBuffer) : null,
-							sbct: sbct ? base64nourl.encode(sbct.buffer as ArrayBuffer) : null,
+							thash: thash ? encodeBase64(thash) : null,
+							iv: iv ? encodeBase64(iv) : null,
+							ct: ct ? encodeBase64(ct) : null,
+							sbiv: sbiv ? encodeBase64(sbiv) : null,
+							sbct: sbct ? encodeBase64(sbct) : null,
 							mtime,
 							deleted,
 						}),
@@ -146,11 +144,11 @@ export class TiddlyPWASyncApp {
 				// console.log('ClntChg', clientChanges);
 				for (const { thash, iv, ct, sbiv, sbct, mtime, deleted } of clientChanges) {
 					this.db.upsertTiddler(token, {
-						thash: base64nourl.decode(thash),
-						iv: iv && base64nourl.decode(iv),
-						ct: ct && base64nourl.decode(ct),
-						sbiv: sbiv && base64nourl.decode(sbiv),
-						sbct: sbct && base64nourl.decode(sbct),
+						thash: decodeBase64(thash),
+						iv: iv && decodeBase64(iv),
+						ct: ct && decodeBase64(ct),
+						sbiv: sbiv && decodeBase64(sbiv),
+						sbct: sbct && decodeBase64(sbct),
 						mtime: new Date(mtime || now),
 						deleted: deleted || false,
 					});
@@ -174,7 +172,7 @@ export class TiddlyPWASyncApp {
 		if (note !== undefined && typeof note !== 'string') {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		const token = base64.encode(crypto.getRandomValues(new Uint8Array(32)).buffer);
+		const token = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
 		this.db.createWiki(token, note);
 		return Response.json({ token }, { headers: respHdrs, status: 201 });
 	}
@@ -310,7 +308,7 @@ export class TiddlyPWASyncApp {
 		if (stripWeak(req.headers.get('if-none-match')) === etagstr) {
 			return new Response(null, { status: 304, headers });
 		}
-		let body;
+		let body: Uint8Array | null = null;
 		if (supportsBrotli) {
 			headers.set('content-encoding', 'br');
 			headers.set('content-length', file.body.length.toString());
@@ -323,7 +321,7 @@ export class TiddlyPWASyncApp {
 				body = brotli.decompress(file.body);
 			}
 		}
-		return new Response(body, { headers });
+		return new Response(body as unknown as BodyInit, { headers });
 	}
 
 	@route(['GET', 'POST', 'OPTIONS'], '/tid.dly')

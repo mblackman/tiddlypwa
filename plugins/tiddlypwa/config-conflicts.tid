@@ -1,0 +1,33 @@
+title: $:/plugins/valpackett/tiddlypwa/config-conflicts
+tags: $:/tags/ControlPanel/TiddlyPWA
+caption: Conflicts
+
+\define tv-wikilinks() no
+
+<h3>Conflicted Tiddlers</h3>
+
+<$list filter="[tag[$:/tags/TiddlyPWA/Conflict]]" emptyMessage="<p>No unresolved conflicts found.</p>">
+<div style="border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; border-radius: 4px; background: #fafafa;">
+  <div>
+    <strong><$link to=<<currentTiddler>>><<currentTiddler>></$link></strong>
+  </div>
+  <div style="margin: 4px 0; font-size: 0.9em; color: #666;">
+    Original: <$link to={{!!tiddlypwa-conflict-of}}><$text text={{!!tiddlypwa-conflict-of}}/></$link> &bull;
+    Branch: <code><$text text={{!!tiddlypwa-conflict-source}}/></code> &bull;
+    Date: <$text text={{!!tiddlypwa-conflict-date}}/>
+  </div>
+  <div style="margin-top: 8px;">
+    <$button class="tc-btn-small">
+      <$action-setfield $tiddler={{!!tiddlypwa-conflict-of}} text={{!!text}} tags={{!!tags}}/>
+      <$action-deletefield $tiddler={{!!tiddlypwa-conflict-of}} tiddlypwa-conflict-of tiddlypwa-conflict-source tiddlypwa-conflict-date/>
+      <$action-listops $tiddler={{!!tiddlypwa-conflict-of}} $subfilter="-[[$:/tags/TiddlyPWA/Conflict]]"/>
+      <$action-deletetiddler $tiddler=<<currentTiddler>>/>
+      Keep This Version
+    </$button>
+    <$button class="tc-btn-small">
+      <$action-deletetiddler $tiddler=<<currentTiddler>>/>
+      Discard Conflict Copy
+    </$button>
+  </div>
+</div>
+</$list>

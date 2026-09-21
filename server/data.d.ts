@@ -1,5 +1,3 @@
-/// <reference lib="deno.window" />
-
 export type Wiki = {
 	token: string;
 	authcode?: string;

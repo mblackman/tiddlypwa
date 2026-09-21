@@ -45,8 +45,7 @@ export const homePage = html`
 							<td></td>
 						</tr>
 					</thead>
-					<tbody id=wikirows>
-					</tbody>
+					<tbody id=wikirows></tbody>
 				</table>
 				<button id=refresh>Refresh</button>
 				<button id=create>Create new wiki</button>

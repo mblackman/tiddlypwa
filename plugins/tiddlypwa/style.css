@@ -5,16 +5,61 @@ tags: $:/tags/Stylesheet
 Licensed under 0BSD, see license.tid.
 \*/
 
-.tc-modal-backdrop { background: <<colour page-background>>; opacity: 0.9; }
-.tc-modal-wrapper { backdrop-filter: blur(3px); }
-.tiddlypwa-form input, .tiddlypwa-form button, .tiddlypwa-form details { display: block; width: 100%; margin: 0.5em 0; }
-.tiddlypwa-form input, .tiddlypwa-form button { padding: 0.25em; border-radius: 3px; border: 1px solid #999; color: inherit; }
-.tiddlypwa-form-error { color: #ee1111; font-weight: bolder; }
-.tiddlypwa-supporter { font: 1.5em cursive; }
-.tiddlypwa-supporter-tier { font-weight: bold; color: pink; text-shadow: -1px 0 0 #fff, 1px 0 0 #fff, 0 -1px #fff, 0 1px #fff, -1px -1px #fff, 1px 1px #fff, -1px 1px #fff, 1px -1px #fff, 0 0 6px rebeccapurple; display: inline-block; transform: rotateZ(-3deg); }
-html body svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-idle { visibility: visible; }
-html body svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-syncing { visibility: hidden; fill: <<colour dirty-indicator>>; }
-html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-idle { visibility: hidden; }
-html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-syncing { visibility: visible; }
-html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic { animation: spin 1s infinite linear; transform-box: fill-box; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.tc-modal-backdrop {
+	background: <<colour page-background>>;
+	opacity: 0.9;
+}
+.tc-modal-wrapper {
+	backdrop-filter: blur(3px);
+}
+.tiddlypwa-form input,
+.tiddlypwa-form button,
+.tiddlypwa-form details {
+	display: block;
+	width: 100%;
+	margin: 0.5em 0;
+}
+.tiddlypwa-form input,
+.tiddlypwa-form button {
+	padding: 0.25em;
+	border-radius: 3px;
+	border: 1px solid #999;
+	color: inherit;
+}
+.tiddlypwa-form-error {
+	color: #ee1111;
+	font-weight: bolder;
+}
+.tiddlypwa-supporter {
+	font: 1.5em cursive;
+}
+.tiddlypwa-supporter-tier {
+	font-weight: bold;
+	color: pink;
+	text-shadow: -1px 0 0 #fff, 1px 0 0 #fff, 0 -1px #fff, 0 1px #fff, -1px -1px #fff, 1px 1px #fff, -1px 1px #fff, 1px
+		-1px #fff, 0 0 6px rebeccapurple;
+	display: inline-block;
+	transform: rotateZ(-3deg);
+}
+html body svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-idle {
+	visibility: visible;
+}
+html body svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-syncing {
+	visibility: hidden;
+	fill: <<colour dirty-indicator>>;
+}
+html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-idle {
+	visibility: hidden;
+}
+html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-syncing {
+	visibility: visible;
+}
+html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic {
+	animation: spin 1s infinite linear;
+	transform-box: fill-box;
+}
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}

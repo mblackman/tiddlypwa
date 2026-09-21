@@ -1,0 +1,4 @@
+title: $:/plugins/valpackett/tiddlypwa/notif-conflict
+
+A sync conflict occurred and a conflict copy was preserved.
+<$button to="$:/ControlPanel" set="$:/state/tab--84302341" setTo="$:/plugins/valpackett/tiddlypwa/config-conflicts" class="tc-btn-invisible tc-tiddlylink">Review in Control Panel</$button>

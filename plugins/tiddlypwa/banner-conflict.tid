@@ -1,0 +1,12 @@
+title: $:/plugins/valpackett/tiddlypwa/banner-conflict
+tags: $:/tags/PageTemplate
+
+<$list filter="[tag[$:/tags/TiddlyPWA/Conflict]limit[1]]" variable="hasConflicts">
+<$reveal type="nomatch" state="$:/temp/HideConflictBanner" text="yes">
+<div class="tc-plugin-reload-warning" role="alert" style="z-index:5000; background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 10px; margin: 5px 0;">
+⚠️ Sync conflict detected: one or more conflict copies were preserved.
+<$button to="$:/ControlPanel" set="$:/state/tab--84302341" setTo="$:/plugins/valpackett/tiddlypwa/config-conflicts">Review Conflicts</$button>
+<$button set="$:/temp/HideConflictBanner" setTo="yes" class="tc-btn-invisible" style="float: right;">{{$:/core/images/close-button}}</$button>
+</div>
+</$reveal>
+</$list>

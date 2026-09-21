@@ -1,7 +1,5 @@
-/// <reference lib="deno.window" />
-
 import { Datastore, File, Tiddler, Wiki } from './data.d.ts';
-import { DB } from 'https://deno.land/x/sqlite@v3.9.0/mod.ts';
+import { DB } from 'sqlite';
 
 const sql = String.raw; // For tools/editors
 
@@ -47,18 +45,53 @@ export class SQLiteDatastore extends DB implements Datastore {
 					DELETE FROM files WHERE etag = OLD.etag AND (SELECT COUNT(*) FROM wikifiles WHERE etag = OLD.etag) = 0;
 				END;
 				CREATE TABLE tiddlers (
-					thash BLOB PRIMARY KEY NOT NULL,
+					token TEXT NOT NULL,
+					thash BLOB NOT NULL,
 					iv BLOB,
 					ct BLOB,
 					sbiv BLOB,
 					sbct BLOB,
 					mtime INTEGER NOT NULL,
 					deleted INTEGER NOT NULL DEFAULT 0,
-					token TEXT NOT NULL,
-					FOREIGN KEY(token) REFERENCES wikis(token) ON DELETE CASCADE
+					FOREIGN KEY(token) REFERENCES wikis(token) ON DELETE CASCADE,
+					PRIMARY KEY (token, thash)
 				) STRICT;
-				PRAGMA user_version = 1;
+				CREATE INDEX idx_tiddlers_token_mtime ON tiddlers (token, mtime);
+				PRAGMA user_version = 2;
 				COMMIT;
+			`);
+		} else if (ver < 2) {
+			this.execute(sql`
+				PRAGMA foreign_keys = OFF;
+				BEGIN TRANSACTION;
+
+				DELETE FROM tiddlers WHERE token NOT IN (SELECT token FROM wikis);
+
+				CREATE TABLE tiddlers_new (
+					token TEXT NOT NULL,
+					thash BLOB NOT NULL,
+					iv BLOB,
+					ct BLOB,
+					sbiv BLOB,
+					sbct BLOB,
+					mtime INTEGER NOT NULL,
+					deleted INTEGER NOT NULL DEFAULT 0,
+					FOREIGN KEY(token) REFERENCES wikis(token) ON DELETE CASCADE,
+					PRIMARY KEY (token, thash)
+				) STRICT;
+
+				INSERT INTO tiddlers_new (token, thash, iv, ct, sbiv, sbct, mtime, deleted)
+				SELECT token, thash, iv, ct, sbiv, sbct, mtime, deleted FROM tiddlers;
+
+				DROP TABLE tiddlers;
+				ALTER TABLE tiddlers_new RENAME TO tiddlers;
+
+				CREATE INDEX idx_tiddlers_token_mtime ON tiddlers (token, mtime);
+
+				PRAGMA user_version = 2;
+				PRAGMA foreign_key_check;
+				COMMIT;
+				PRAGMA foreign_keys = ON;
 			`);
 		}
 	}
@@ -155,6 +188,7 @@ export class SQLiteDatastore extends DB implements Datastore {
 	>(sql`
 		SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
 		FROM tiddlers WHERE mtime > :modsince AND token = :token
+		ORDER BY mtime ASC
 	`);
 	*tiddlersChangedSince(token: string, since: Date) {
 		for (const tiddler of this.#changedQuery.iterEntries({ modsince: since.getTime(), token })) {
@@ -163,9 +197,9 @@ export class SQLiteDatastore extends DB implements Datastore {
 	}
 
 	#upsertQuery = this.prepareQuery(sql`
-		INSERT INTO tiddlers (thash, iv, ct, sbiv, sbct, mtime, deleted, token)
-		VALUES (:thash, :iv, :ct, :sbiv, :sbct, :mtime, :deleted, :token)
-		ON CONFLICT (thash) DO UPDATE SET
+		INSERT INTO tiddlers (token, thash, iv, ct, sbiv, sbct, mtime, deleted)
+		VALUES (:token, :thash, :iv, :ct, :sbiv, :sbct, :mtime, :deleted)
+		ON CONFLICT (token, thash) DO UPDATE SET
 		iv = excluded.iv,
 		ct = excluded.ct,
 		sbiv = excluded.sbiv,
@@ -173,7 +207,6 @@ export class SQLiteDatastore extends DB implements Datastore {
 		mtime = excluded.mtime,
 		deleted = excluded.deleted
 		WHERE excluded.mtime > mtime
-		AND token = excluded.token
 	`);
 	upsertTiddler(token: string, tiddler: Tiddler) {
 		this.#upsertQuery.execute({ ...tiddler, mtime: tiddler.mtime.getTime(), token });
