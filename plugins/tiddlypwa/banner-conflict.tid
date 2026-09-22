@@ -3,10 +3,16 @@ tags: $:/tags/PageTemplate
 
 <$list filter="[tag[$:/tags/TiddlyPWA/Conflict]limit[1]]" variable="hasConflicts">
 <$reveal type="nomatch" state="$:/temp/HideConflictBanner" text="yes">
-<div class="tc-plugin-reload-warning" role="alert" style="z-index:5000; background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 10px; margin: 5px 0;">
-⚠️ Sync conflict detected: one or more conflict copies were preserved.
-<$button to="$:/ControlPanel" set="$:/state/tab--84302341" setTo="$:/plugins/valpackett/tiddlypwa/config-conflicts">Review Conflicts</$button>
-<$button set="$:/temp/HideConflictBanner" setTo="yes" class="tc-btn-invisible" style="float: right;">{{$:/core/images/close-button}}</$button>
+<div class="tc-plugin-reload-warning" role="alert" style="z-index: 5000; background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 10px 14px; margin: 5px 0; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+  <div>
+    <strong>⚠️ Sync conflict detected:</strong> one or more conflict copies were preserved.
+    <$button to="$:/ControlPanel" class="tc-btn-small" style="margin-left: 10px; font-weight: bold;">
+      <$action-setfield $tiddler="$:/state/tab-1749438307" text="$:/plugins/valpackett/tiddlypwa/config"/>
+      <$action-setfield $tiddler="$:/state/tab--84302341" text="$:/plugins/valpackett/tiddlypwa/config-conflicts"/>
+      Review Conflicts
+    </$button>
+  </div>
+  <$button set="$:/temp/HideConflictBanner" setTo="yes" class="tc-btn-invisible" tooltip="Dismiss notification" style="cursor: pointer; opacity: 0.7; padding: 2px 6px;">{{$:/core/images/close-button}}</$button>
 </div>
 </$reveal>
 </$list>

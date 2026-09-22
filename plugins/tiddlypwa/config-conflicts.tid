@@ -16,16 +16,22 @@ caption: Conflicts
     Branch: <code><$text text={{!!tiddlypwa-conflict-source}}/></code> &bull;
     Date: <$text text={{!!tiddlypwa-conflict-date}}/>
   </div>
+  <div style="margin: 6px 0; padding: 6px; background: #fff; border: 1px solid #eee; max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 0.85em; white-space: pre-wrap;">
+    <$text text={{!!text}}/>
+  </div>
   <div style="margin-top: 8px;">
     <$button class="tc-btn-small">
       <$action-setfield $tiddler={{!!tiddlypwa-conflict-of}} text={{!!text}} tags={{!!tags}}/>
       <$action-deletefield $tiddler={{!!tiddlypwa-conflict-of}} tiddlypwa-conflict-of tiddlypwa-conflict-source tiddlypwa-conflict-date/>
       <$action-listops $tiddler={{!!tiddlypwa-conflict-of}} $subfilter="-[[$:/tags/TiddlyPWA/Conflict]]"/>
+      <$action-deletetiddler $tiddler={{{ [{!!tiddlypwa-conflict-of}addprefix[Draft of ']]addsuffix['] }}}/>
       <$action-deletetiddler $tiddler=<<currentTiddler>>/>
+      <$action-setfield $tiddler="$:/status/TiddlyPWAConflictsCount" text={{{ [tag[$:/tags/TiddlyPWA/Conflict]!title<currentTiddler>count[]] }}}/>
       Keep This Version
     </$button>
     <$button class="tc-btn-small">
       <$action-deletetiddler $tiddler=<<currentTiddler>>/>
+      <$action-setfield $tiddler="$:/status/TiddlyPWAConflictsCount" text={{{ [tag[$:/tags/TiddlyPWA/Conflict]!title<currentTiddler>count[]] }}}/>
       Discard Conflict Copy
     </$button>
   </div>

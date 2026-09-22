@@ -25,9 +25,33 @@ Formatted with `deno fmt`.
 	$tw.utils.extractVersionInfo = () => $tw.wiki.getTiddler('$:/core').fields.version;
 	Object.defineProperty($tw, 'version', { get: $tw.utils.extractVersionInfo });
 
-	// Patch this to direct all plugins into the app wiki saving process
-	// (It gets called on a lot of junk that's not plugin info, so just detect actual plugins)
-	$tw.wiki.doesPluginInfoRequireReload = (x) => typeof x === 'object' && 'tiddlers' in x;
+	// Patch this to direct all actual plugins into the app wiki saving process,
+	// while ignoring internal pseudo-plugins ($:/temp/info-plugin) and import payloads.
+	const origDoesPluginRequireReload = $tw.wiki.doesPluginRequireReload;
+	$tw.wiki.doesPluginRequireReload = function (title) {
+		if (title === '$:/temp/info-plugin' || (typeof title === 'string' && title.startsWith('$:/temp/'))) {
+			return false;
+		}
+		const tiddler = this.getTiddler(title);
+		if (tiddler && tiddler.fields.type === 'application/json' && tiddler.fields['plugin-type']) {
+			if (tiddler.fields['plugin-type'] === 'import' || tiddler.fields['plugin-type'] === 'info') {
+				return false;
+			}
+			// In TiddlyPWA, plugins, themes, and languages cannot be synced via IndexedDB/server;
+			// they must be saved into the app HTML file. Thus all genuine plugins require reload.
+			return true;
+		}
+		if (tiddler && tiddler.fields.type === 'application/javascript' && tiddler.fields['module-type']) {
+			return true;
+		}
+		return origDoesPluginRequireReload ? origDoesPluginRequireReload.call(this, title) : false;
+	};
+
+	$tw.wiki.doesPluginInfoRequireReload = (x) => {
+		if (!x || typeof x !== 'object' || !('tiddlers' in x)) return false;
+		if (x['plugin-type'] === 'import' || x['plugin-type'] === 'info') return false;
+		return true;
+	};
 
 	// As of mid 2023 only Firefox has this natively
 	if (typeof ReadableStream === 'function' && !ReadableStream.prototype[Symbol.asyncIterator]) {
@@ -120,6 +144,15 @@ Formatted with `deno fmt`.
 		// (Actually that case is about core not firing lazyLoad when a custom viewtemplate is used,
 		//  but we can imagine other kinds of custom-field-having tiddlers needing content always loaded)
 		for (const k of Object.keys(tid)) if (!knownFields.has(k)) return true;
+		return false;
+	}
+
+	function isDraftTiddler(tid) {
+		if (!tid) return false;
+		if (typeof tid.isDraft === 'function' && tid.isDraft()) return true;
+		const fields = tid.fields || tid;
+		if (fields['draft.of']) return true;
+		if (typeof fields.title === 'string' && fields.title.startsWith("Draft of '")) return true;
 		return false;
 	}
 
@@ -514,6 +547,10 @@ Formatted with `deno fmt`.
 					if (deleted) continue;
 					// not isReady yet, can safely addTiddler
 					const tid = await this.parseEncryptedTiddler({ thash, ct, iv });
+					if (isDraftTiddler(tid)) {
+						this.db.transaction('tiddlers', 'readwrite').objectStore('tiddlers').delete(thash);
+						continue;
+					}
 					if (sbiv && sbct) {
 						if (mustEagerLoad(tid)) {
 							tid.text = await decodeData(
@@ -543,6 +580,11 @@ Formatted with `deno fmt`.
 			await themHandlers; // ha
 			console.timeEnd('initial add');
 			this.ready = true;
+			const initialConflictCount = this.wiki.filterTiddlers('[tag[$:/tags/TiddlyPWA/Conflict]]').length;
+			this.wiki.addTiddler({
+				title: '$:/status/TiddlyPWAConflictsCount',
+				text: String(initialConflictCount),
+			});
 			setTimeout(() => {
 				try {
 					$tw.__update_tiddlypwa_manifest__();
@@ -852,9 +894,12 @@ Formatted with `deno fmt`.
 			return crypto.subtle.sign('HMAC', this.mackey, utfenc.encode(x));
 		}
 
-		/** @param {ArrayBuffer} thash */
+		/** @param {ArrayBuffer|ArrayBufferView} thash */
 		enckey(thash) {
-			return this.enckeys[new DataView(thash).getUint8(0) % this.enckeys.length];
+			const byte0 = (thash instanceof Uint8Array || ArrayBuffer.isView(thash))
+				? thash[0]
+				: new DataView(thash.buffer || thash, thash.byteOffset || 0).getUint8(0);
+			return this.enckeys[byte0 % this.enckeys.length];
 		}
 
 		async _saveTiddler(tiddler) {
@@ -903,6 +948,9 @@ Formatted with `deno fmt`.
 		}
 
 		saveTiddler(tiddler, cb) {
+			if (isDraftTiddler(tiddler)) {
+				return cb(null, '', 1);
+			}
 			if (tiddler.fields._is_skinny) {
 				// This probably has prevented data loss in the Section Editor case #23
 				return cb(null, '', 1);
@@ -976,6 +1024,9 @@ Formatted with `deno fmt`.
 		}
 
 		deleteTiddler(title, cb, _options) {
+			if (typeof title === 'string' && title.startsWith("Draft of '")) {
+				return cb(null);
+			}
 			this._deleteTiddler(title).then((_) => {
 				cb(null);
 				this.changesChannel.postMessage({ title, del: true });
@@ -1328,9 +1379,8 @@ Formatted with `deno fmt`.
 					title: '$:/status/TiddlyPWAConflictsCount',
 					text: String(this.wiki.filterTiddlers('[tag[$:/tags/TiddlyPWA/Conflict]]').length),
 				});
-				if ($tw.notifier) {
-					$tw.notifier.display('$:/plugins/valpackett/tiddlypwa/notif-conflict');
-				}
+				this.wiki.deleteTiddler('$:/temp/HideConflictBanner');
+				this.logger.log(`Sync conflict detected: ${conflictTiddlersToAdd.length} conflict copies preserved.`);
 			}
 			if (titleHashesToDelete.size > 0) {
 				for (const title of $tw.wiki.allTitles()) {
@@ -1341,16 +1391,27 @@ Formatted with `deno fmt`.
 				}
 			}
 			for (const x of toDecrypt) {
-				const { title } = await this.parseEncryptedTiddler(x);
+				const tid = await this.parseEncryptedTiddler(x);
+				const title = tid?.title;
+				if (!title || isDraftTiddler(tid)) continue;
 				// isReady, so only go through the syncer mechanism here, even though that results in double decryption
 				if (title !== '$:/StoryList') {
 					const draftTitle = `Draft of '${title}'`;
 					if (this.wiki.tiddlerExists(draftTitle)) {
-						this.logger.alert(
-							`Notice: "${title}" was updated on another device while you have a draft open! Please review your changes before saving.`,
-						);
-						if ($tw.notifier) {
-							$tw.notifier.display('$:/plugins/valpackett/tiddlypwa/notif-conflict');
+						const draftTid = this.wiki.getTiddler(draftTitle);
+						const draftText = draftTid?.fields?.text || '';
+						const draftTags = draftTid?.fields?.tags || '';
+						if (draftText !== (tid.text || '') || draftTags !== (tid.tags || '')) {
+							const conflictTid = this.createConflictTiddler(tid, title, 'remote', x.mtime);
+							this.wiki.addTiddler(conflictTid);
+							this.wiki.addTiddler({
+								title: '$:/status/TiddlyPWAConflictsCount',
+								text: String(this.wiki.filterTiddlers('[tag[$:/tags/TiddlyPWA/Conflict]]').length),
+							});
+							this.wiki.deleteTiddler('$:/temp/HideConflictBanner');
+							this.logger.log(
+								`Notice: "${title}" was updated on another device while you have a draft open! A remote conflict copy "${conflictTid.fields.title}" has been preserved.`,
+							);
 						}
 					}
 					this.modifiedQueue.add(title);

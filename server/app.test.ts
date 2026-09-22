@@ -1,5 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
 import { assertEquals } from '@std/assert';
+import * as brotli from 'brotli';
 import { SQLiteDatastore } from './sqlite.ts';
 import { TiddlyPWASyncApp } from './app.ts';
 
@@ -458,6 +459,36 @@ Deno.test('fallback conflict detection without baseMtime protects against older 
 	assertEquals(staleRes.conflicts, [sharedThash]);
 	assertEquals(staleRes.serverChanges.length, 1);
 	assertEquals(staleRes.serverChanges[0].ct, 'bmV3ZXI=');
+
+	await deleteWiki(tok);
+});
+
+Deno.test('wiki asset serving: Brotli encoding and fallback decompression', async () => {
+	const tok = await createWiki();
+	const testHtml = '<!doctype html><html><head><title>Test Wiki</title></head><body><h1>Hello World</h1></body></html>';
+	const uploadRes = await _uploadAppFile(tok, testHtml, {}, 'app.html');
+	const prefix = uploadRes.urlprefix; // e.g. "halftoken/"
+
+	// 1. Request with Accept-Encoding: br (like Firefox)
+	const brReq = new Request(`http://example.com/${prefix}app.html`, {
+		headers: { 'Accept-Encoding': 'gzip, deflate, br, zstd' },
+	});
+	const brResp = await app.handle(brReq);
+	assertEquals(brResp.status, 200);
+	assertEquals(brResp.headers.get('content-encoding'), 'br');
+	const brBytes = new Uint8Array(await brResp.arrayBuffer());
+	const decompressed = brotli.decompress(brBytes);
+	assertEquals(new TextDecoder().decode(decompressed), testHtml);
+
+	// 2. Request without br (fallback to uncompressed)
+	const noBrReq = new Request(`http://example.com/${prefix}app.html`, {
+		headers: { 'Accept-Encoding': 'gzip, deflate' },
+	});
+	const noBrResp = await app.handle(noBrReq);
+	assertEquals(noBrResp.status, 200);
+	assertEquals(noBrResp.headers.get('content-encoding'), null);
+	const rawText = await noBrResp.text();
+	assertEquals(rawText, testHtml);
 
 	await deleteWiki(tok);
 });
