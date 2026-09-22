@@ -9,33 +9,33 @@ In an offline-first system where devices operate disconnected for hours or days,
 1. **Zero Data Loss**: When two devices diverge, neither edit is discarded. One version is chosen as canonical; the other is safely preserved as a dedicated conflict tiddler.
 2. **False Conflict Suppression**: If two devices make identical edits (or save without changing content), the engine detects payload equality and suppresses false conflict warnings.
 3. **Transparent User Workflows**: Conflicts are announced via toast notifications, marked with a prominent banner, and managed within a dedicated Control Panel workspace.
-4. **Server Agnosticism**: Because the server has zero knowledge of plaintext content, the conflict engine runs entirely on the client during synchronization.
+4. **Server-Guarded Optimistic Concurrency Control (OCC)**: While the server has zero knowledge of plaintext content, it enforces optimistic locking on ciphertext metadata: clients supply `baseMtime` (the timestamp of the version an edit was branched from). If the server already holds an update newer than `baseMtime`, the server rejects the overwrite, returns the conflicting title hash in `conflicts`, and streams the canonical server version to the client for non-destructive local resolution.
 
 ---
 
-## 2. The 4-Way Conflict Matrix
+## 2. Optimistic Concurrency Control (OCC) & The Conflict Matrix
 
-When a client receives a remote tiddler that conflicts with a local unsynced change (`ourtid` exists in `localChangesByHash`), it evaluates the **4-Way Conflict Matrix**:
+When a client synchronizes, changes are evaluated against the server's state using `baseMtime`. If a conflict occurs (or if `ourtid` exists concurrently in `localChangesByHash`), the engine evaluates the **4-Way Conflict Matrix**:
 
 ```mermaid
 flowchart TD
-    ConflictDetected["Conflict Detected for thash\n(Local and Remote both have changes since lastSync)"]
+    ConflictDetected["Conflict Detected for thash\n(Server reports conflict or local & remote changes overlap)"]
 
     ConflictDetected --> MatrixCheck{Check Change Types}
 
     MatrixCheck -->|Both Edited| DecryptBoth[Decrypt Local & Remote Tiddlers]
     DecryptBoth --> EqCheck{tiddlersAreEqual?}
     EqCheck -->|Yes| Suppress[Suppress False Conflict\nApply Server Version to IDB]
-    EqCheck -->|No| CompareTimes{ourMtime > remotetid.mtime?}
-    CompareTimes -->|Local Newer| LocalWins[Local Remains Canonical\nSave Remote Copy as Conflict Tiddler]
-    CompareTimes -->|Remote Newer| RemoteWins[Remote Becomes Canonical\nSave Local Copy as Conflict Tiddler]
+    EqCheck -->|No| CompareTimes{isServerConflict OR remote >= local?}
+    CompareTimes -->|Server Canonical| RemoteWins[Remote/Canonical Applied to IDB\nSave Local Copy as Conflict Tiddler]
+    CompareTimes -->|Local Newer & Accepted| LocalWins[Local Remains Canonical\nSave Remote Copy as Conflict Tiddler]
 
-    MatrixCheck -->|Local Edit vs Remote Delete| LEditRDel{remote.mtime > local.mtime?}
-    LEditRDel -->|Yes: Remote Delete Newer| DelWins1[Apply Delete to IDB\nSave Local Edit as Conflict Tiddler]
+    MatrixCheck -->|Local Edit vs Remote Delete| LEditRDel{isServerConflict OR remote > local?}
+    LEditRDel -->|Yes: Remote Delete Canonical| DelWins1[Apply Delete to IDB\nSave Local Edit as Conflict Tiddler]
     LEditRDel -->|No: Local Edit Newer| LocalResurrect[Local Edit Wins\nResurrects Tiddler]
 
-    MatrixCheck -->|Local Delete vs Remote Edit| LDelREdit{remote.mtime > local.mtime?}
-    LDelREdit -->|Yes: Remote Edit Newer| RemoteResurrect[Remote Edit Wins\nResurrects Tiddler in IDB]
+    MatrixCheck -->|Local Delete vs Remote Edit| LDelREdit{isServerConflict OR remote > local?}
+    LDelREdit -->|Yes: Remote Edit Canonical| RemoteResurrect[Remote Edit Wins\nResurrects Tiddler in IDB]
     LDelREdit -->|No: Local Delete Newer| DelWins2[Delete Wins in IDB\nSave Remote Edit as Conflict Tiddler]
 
     MatrixCheck -->|Both Deleted| BothDel[Idempotent No-Op\nRetain Deletion in IDB]

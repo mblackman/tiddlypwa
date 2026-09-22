@@ -92,13 +92,13 @@ export const homePage = html`
 					for (const { token, note, salt, tidsize, appsize } of wikis) {
 						const tr = document.createElement('tr');
 						const noteTd = document.createElement('td');
-						noteTd.innerText = note;
+						noteTd.innerText = note ?? '-';
 						tr.appendChild(noteTd);
 						const tokenTd = document.createElement('td');
 						tokenTd.innerText = token;
 						tr.appendChild(tokenTd);
 						const saltTd = document.createElement('td');
-						saltTd.innerText = salt;
+						saltTd.innerText = salt ?? '-';
 						tr.appendChild(saltTd);
 						const tidsizeTd = document.createElement('td');
 						tidsizeTd.innerText = tidsize > 0 ? formatBytes(tidsize) : '-';

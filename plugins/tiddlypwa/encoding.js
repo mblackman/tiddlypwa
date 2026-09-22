@@ -20,9 +20,10 @@ Formatted with `deno fmt`.
 			return null;
 		}
 
-		return (await new Promise((resolve) => {
+		return (await new Promise((resolve, reject) => {
 			const reader = new FileReader();
 			reader.onload = () => resolve(reader.result);
+			reader.onerror = (err) => reject(err);
 			reader.readAsDataURL(new Blob([data]));
 		})).split(',', 2)[1];
 	};
@@ -74,7 +75,8 @@ Formatted with `deno fmt`.
 			if (isBin) throw new Error('unsupported encoding');
 			let str = '';
 			const rdr = new Blob([body]).stream().pipeThrough(new DecompressionStream('gzip'));
-			for await (const chunk of rdr) str += utfdec.decode(chunk);
+			for await (const chunk of rdr) str += utfdec.decode(chunk, { stream: true });
+			str += utfdec.decode();
 			return str;
 		}
 		return isBin ? module.exports.b64enc(body) : utfdec.decode(body);

@@ -10,20 +10,25 @@ Formatted with `deno fmt`.
 const CACHE = 'tiddlypwa';
 
 async function fromNetCaching(req, cacheResp) {
-	// "preflight" for letting the server wake up if it's on a free service that suspends instances:
-	await fetch(req.url, { method: 'OPTIONS', cache: 'no-cache' });
-	const response = await fetch(new Request(req), { cache: 'no-cache' });
-	if (response.ok) {
-		const changed = cacheResp && (await response.clone().text() !== await cacheResp.text());
-		const cache = await caches.open(CACHE);
-		await cache.put(req, response.clone());
-		if (changed) {
-			for (const client of await clients.matchAll()) {
-				client.postMessage({ op: 'refresh' });
+	try {
+		// "preflight" for letting the server wake up if it's on a free service that suspends instances:
+		await fetch(req.url, { method: 'OPTIONS', cache: 'no-cache' }).catch(() => {});
+		const response = await fetch(new Request(req), { cache: 'no-cache' });
+		if (response.ok) {
+			const changed = cacheResp && (await response.clone().text() !== await cacheResp.text());
+			const cache = await caches.open(CACHE);
+			await cache.put(req, response.clone());
+			if (changed) {
+				for (const client of await clients.matchAll()) {
+					client.postMessage({ op: 'refresh' });
+				}
 			}
 		}
+		return response;
+	} catch (e) {
+		if (cacheResp) return cacheResp;
+		throw e;
 	}
-	return response;
 }
 
 async function fromCache(evt) {
@@ -62,8 +67,11 @@ self.addEventListener('activate', (evt) => {
 self.addEventListener('install', (evt) => {
 	skipWaiting();
 	evt.waitUntil(async function () {
-		const url = (await clients.matchAll({ includeUncontrolled: true }))[0].url;
-		url.hash = '';
-		await fromNetCaching(new Request(url));
+		const clientList = await clients.matchAll({ includeUncontrolled: true });
+		if (clientList.length > 0 && clientList[0].url) {
+			const u = new URL(clientList[0].url);
+			u.hash = '';
+			await fromNetCaching(new Request(u.href));
+		}
 	}());
 });

@@ -7,7 +7,6 @@ Licensed under 0BSD, see license.tid.
 Formatted with `deno fmt`.
 \*/
 /// <reference types="npm:tw5-typed" />
-// deno-lint-ignore-file no-window-prefix
 (function () {
 	'use strict';
 
@@ -170,11 +169,11 @@ Formatted with `deno fmt`.
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOrigin', text: location.origin });
 
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOnline', text: navigator.onLine ? 'yes' : 'no' });
-			window.addEventListener(
+			globalThis.addEventListener(
 				'offline',
 				(_evt) => this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOnline', text: 'no' }),
 			);
-			window.addEventListener(
+			globalThis.addEventListener(
 				'online',
 				(_evt) => {
 					this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOnline', text: 'yes' });
@@ -266,7 +265,7 @@ Formatted with `deno fmt`.
 				});
 			});
 
-			$tw.rootWidget.addEventListener('tiddlypwa-open-save-dialog', (evt) => {
+			$tw.rootWidget.addEventListener('tiddlypwa-open-save-dialog', (_evt) => {
 				$tw.modal.display('$:/plugins/valpackett/tiddlypwa/sync-dialog', {});
 			});
 
@@ -284,7 +283,7 @@ Formatted with `deno fmt`.
 			});
 
 			$tw.rootWidget.addEventListener('tiddlypwa-sync-cancel', (_evt) => {
-				this.syncAbort.abort();
+				this.syncAbort?.abort();
 			});
 
 			$tw.rootWidget.addEventListener('tiddlypwa-sync-all', (_evt) => {
@@ -348,7 +347,7 @@ Formatted with `deno fmt`.
 			}
 			const server = servers[~~(Math.random() * servers.length)];
 			const url = new URL(server.url, document.location);
-			const bareUrl = url;
+			const bareUrl = new URL(server.url, document.location).href;
 			this.wiki.addTiddler({
 				title: '$:/status/TiddlyPWARealtime',
 				text: `connecting to ${bareUrl}`,
@@ -370,7 +369,7 @@ Formatted with `deno fmt`.
 			});
 			this.wiki.addTiddler({
 				title: '$:/status/TiddlyPWARealtime',
-				text: `disconnected from ${url}`,
+				text: `disconnected from ${bareUrl}`,
 			});
 			this.monitorStream.close();
 			this.startedMonitor = false;
@@ -886,6 +885,8 @@ Formatted with `deno fmt`.
 					await encodeData(tiddler.fields.text, isBin, 256),
 				);
 			}
+			const existing = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').get(thash));
+			const baseMtime = existing ? (existing.baseMtime || existing.mtime) : null;
 			await adb(
 				this.db.transaction('tiddlers', 'readwrite').objectStore('tiddlers').put({
 					thash, // The title hash is the primary key
@@ -895,6 +896,7 @@ Formatted with `deno fmt`.
 					sbct,
 					mtime: new Date(), // Has to be unencrypted for sync conflict resolution
 					// also, *not* using the tiddler's modified field allows for importing tiddlers last modified in the past
+					baseMtime,
 				}),
 			);
 			await this.reflectStorageInfo();
@@ -931,7 +933,7 @@ Formatted with `deno fmt`.
 		async _loadTiddler(title) {
 			const thash = await this.titlehash(title);
 			const obj = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').get(thash));
-			if (obj.deleted) return null;
+			if (!obj) return null;
 			const tid = await this.parseEncryptedTiddler(obj);
 			if (obj.sbiv && obj.sbct) {
 				tid.text = await decodeData(
@@ -942,11 +944,11 @@ Formatted with `deno fmt`.
 		}
 
 		loadTiddler(title, cb) {
-			this._loadTiddler(title).then((tiddler) => {
-				cb(null, tiddler);
+			this._loadTiddler(title).then((tid) => {
+				cb(null, tid);
 				if (title === $tw.syncer.titleSyncFilter) {
 					// XXX: syncer should itself monitor for changes and recompile
-					$tw.syncer.filterFn = this.wiki.compileFilter(tiddler.text);
+					$tw.syncer.filterFn = this.wiki.compileFilter(tid.text);
 				}
 			}).catch((e) => {
 				console.error(e);
@@ -956,6 +958,8 @@ Formatted with `deno fmt`.
 
 		async _deleteTiddler(title) {
 			const thash = await this.titlehash(title);
+			const existing = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').get(thash));
+			const baseMtime = existing ? (existing.baseMtime || existing.mtime) : null;
 			await adb(
 				this.db.transaction('tiddlers', 'readwrite').objectStore('tiddlers').put({
 					thash,
@@ -965,6 +969,7 @@ Formatted with `deno fmt`.
 					sbct: undefined,
 					mtime: new Date(),
 					deleted: true,
+					baseMtime,
 				}),
 			);
 			await this.reflectStorageInfo();
@@ -1096,7 +1101,7 @@ Formatted with `deno fmt`.
 			const localChangesByHash = new Map();
 			let newestChg = new Date(0);
 			for (const tid of changes) {
-				const { thash, iv, ct, sbiv, sbct, mtime, deleted } = tid;
+				const { thash, iv, ct, sbiv, sbct, mtime, deleted, baseMtime } = tid;
 				if (arrayEq(thash, this.storyListHash)) continue;
 				if (mtime > newestChg) {
 					newestChg = mtime;
@@ -1110,6 +1115,9 @@ Formatted with `deno fmt`.
 					sbiv: sbiv && (await b64enc(sbiv)),
 					mtime,
 					deleted,
+					baseMtime: baseMtime
+						? (baseMtime instanceof Date ? baseMtime.toISOString() : new Date(baseMtime).toISOString())
+						: undefined,
 				};
 				clientChanges.push(tidjson);
 				localChangesByHash.set(b64hash, tid);
@@ -1144,7 +1152,9 @@ Formatted with `deno fmt`.
 						.catch((_e) => 'Server returned error ' + resp.status),
 				);
 			}
-			const { serverChanges, appEtag } = await resp.json();
+			const serverTimeHdr = resp.headers.get('x-server-time');
+			const { serverChanges, appEtag, conflicts } = await resp.json();
+			const conflictSet = new Set(conflicts || []);
 			const toDecrypt = [];
 			const titleHashesToDelete = new Set();
 			const idbWrites = [];
@@ -1165,15 +1175,28 @@ Formatted with `deno fmt`.
 				this.logger.log('remote change', thash);
 
 				const ourtid = localChangesByHash.get(thash);
-				if (ourtid) {
-					const ourMtime = ourtid.mtime instanceof Date ? ourtid.mtime : new Date(ourtid.mtime);
-					this.logger.log('conflict detected:', thash, 'server:', remotetid.mtime, 'local:', ourMtime);
+				const isServerConflict = conflictSet.has(thash);
 
-					if (ourtid.deleted && remotetid.deleted) {
+				if (ourtid || isServerConflict) {
+					const ourMtime = ourtid
+						? (ourtid.mtime instanceof Date ? ourtid.mtime : new Date(ourtid.mtime))
+						: new Date(0);
+					this.logger.log(
+						'conflict detected:',
+						thash,
+						'server:',
+						remotetid.mtime,
+						'local:',
+						ourMtime,
+						'serverConflict:',
+						isServerConflict,
+					);
+
+					if (ourtid && ourtid.deleted && remotetid.deleted) {
 						// Both deleted: no-op, retain deletion
 						idbWrites.push(remotetid);
 						titleHashesToDelete.add(thash);
-					} else if (!ourtid.deleted && !remotetid.deleted) {
+					} else if (ourtid && !ourtid.deleted && !remotetid.deleted) {
 						// Both edited concurrently
 						const ourDecrypted = await this.decryptRawTiddler(ourtid);
 						const remoteDecrypted = await this.decryptRawTiddler(remotetid);
@@ -1184,17 +1207,9 @@ Formatted with `deno fmt`.
 							toDecrypt.push(remotetid);
 						} else {
 							const originalTitle = ourDecrypted?.title || remoteDecrypted?.title || 'Untitled';
-							if (ourMtime.getTime() > remotetid.mtime.getTime()) {
-								// Local is newer: Local remains canonical, preserve remote copy
-								this.logger.log('Local is newer; keeping local canonical and saving remote conflict copy');
-								if (remoteDecrypted) {
-									conflictTiddlersToAdd.push(
-										this.createConflictTiddler(remoteDecrypted, originalTitle, 'remote', remotetid.mtime),
-									);
-								}
-							} else {
-								// Server is newer (or equal): Remote is canonical, preserve local copy
-								this.logger.log('Server is newer; applying server canonical and preserving local conflict copy');
+							if (isServerConflict || remotetid.mtime.getTime() >= ourMtime.getTime()) {
+								// Server canonical version wins; preserve local edit in conflict copy
+								this.logger.log('Server is canonical; preserving local conflict copy');
 								if (ourDecrypted) {
 									conflictTiddlersToAdd.push(
 										this.createConflictTiddler(ourDecrypted, originalTitle, 'local', ourMtime),
@@ -1202,15 +1217,23 @@ Formatted with `deno fmt`.
 								}
 								idbWrites.push(remotetid);
 								toDecrypt.push(remotetid);
+							} else {
+								// Local is newer and was accepted by server: local remains canonical, preserve remote copy
+								this.logger.log('Local is newer; keeping local canonical and saving remote conflict copy');
+								if (remoteDecrypted) {
+									conflictTiddlersToAdd.push(
+										this.createConflictTiddler(remoteDecrypted, originalTitle, 'remote', remotetid.mtime),
+									);
+								}
 							}
 						}
-					} else if (!ourtid.deleted && remotetid.deleted) {
+					} else if (ourtid && !ourtid.deleted && remotetid.deleted) {
 						// Local edit vs Remote delete
 						const ourDecrypted = await this.decryptRawTiddler(ourtid);
 						const originalTitle = ourDecrypted?.title || 'Untitled';
-						if (remotetid.mtime.getTime() > ourMtime.getTime()) {
-							// Remote delete is newer: Apply deletion, preserve local edits in conflict copy
-							this.logger.log('Remote delete is newer; preserving local edit in conflict copy');
+						if (isServerConflict || remotetid.mtime.getTime() > ourMtime.getTime()) {
+							// Remote delete is canonical: Apply deletion, preserve local edits in conflict copy
+							this.logger.log('Remote delete is canonical; preserving local edit in conflict copy');
 							if (ourDecrypted) {
 								conflictTiddlersToAdd.push(
 									this.createConflictTiddler(ourDecrypted, originalTitle, 'local', ourMtime),
@@ -1222,13 +1245,13 @@ Formatted with `deno fmt`.
 							// Local edit is newer: Local edit resurrects tiddler
 							this.logger.log('Local edit is newer than remote delete; resurrecting local');
 						}
-					} else if (ourtid.deleted && !remotetid.deleted) {
+					} else if (ourtid && ourtid.deleted && !remotetid.deleted) {
 						// Local delete vs Remote edit
 						const remoteDecrypted = await this.decryptRawTiddler(remotetid);
 						const originalTitle = remoteDecrypted?.title || 'Untitled';
-						if (remotetid.mtime.getTime() > ourMtime.getTime()) {
+						if (isServerConflict || remotetid.mtime.getTime() > ourMtime.getTime()) {
 							// Remote edit is newer: Remote edit resurrects tiddler
-							this.logger.log('Remote edit is newer than local delete; applying remote edit');
+							this.logger.log('Remote edit is canonical; applying remote edit');
 							idbWrites.push(remotetid);
 							toDecrypt.push(remotetid);
 						} else {
@@ -1239,6 +1262,13 @@ Formatted with `deno fmt`.
 									this.createConflictTiddler(remoteDecrypted, originalTitle, 'remote', remotetid.mtime),
 								);
 							}
+						}
+					} else {
+						idbWrites.push(remotetid);
+						if (remotetid.deleted) {
+							titleHashesToDelete.add(thash);
+						} else {
+							toDecrypt.push(remotetid);
 						}
 					}
 				} else {
@@ -1269,6 +1299,26 @@ Formatted with `deno fmt`.
 				});
 			}
 
+			// Update baseMtime for successfully synced local changes that did not conflict
+			const nonConflictedLocalWrites = [];
+			for (const [b64hash, tid] of localChangesByHash) {
+				if (!conflictSet.has(b64hash)) {
+					tid.baseMtime = tid.mtime;
+					nonConflictedLocalWrites.push(tid);
+				}
+			}
+			if (nonConflictedLocalWrites.length > 0) {
+				const txn = this.db.transaction('tiddlers', 'readwrite');
+				const store = txn.objectStore('tiddlers');
+				for (const tid of nonConflictedLocalWrites) {
+					store.put(tid);
+				}
+				await new Promise((resolve, reject) => {
+					txn.oncomplete = resolve;
+					txn.onerror = () => reject(txn.error);
+				});
+			}
+
 			// Add conflict copies to wiki runtime (which triggers syncer save and server replication)
 			for (const conflictTid of conflictTiddlersToAdd) {
 				this.wiki.addTiddler(conflictTid);
@@ -1282,16 +1332,27 @@ Formatted with `deno fmt`.
 					$tw.notifier.display('$:/plugins/valpackett/tiddlypwa/notif-conflict');
 				}
 			}
-			for (const title of $tw.wiki.allTitles()) {
-				if (titleHashesToDelete.has(await b64enc(await this.titlehash(title)))) {
-					this.deletedQueue.add(title);
-					this.changesChannel.postMessage({ title, del: true });
+			if (titleHashesToDelete.size > 0) {
+				for (const title of $tw.wiki.allTitles()) {
+					if (titleHashesToDelete.has(await b64enc(await this.titlehash(title)))) {
+						this.deletedQueue.add(title);
+						this.changesChannel.postMessage({ title, del: true });
+					}
 				}
 			}
 			for (const x of toDecrypt) {
 				const { title } = await this.parseEncryptedTiddler(x);
 				// isReady, so only go through the syncer mechanism here, even though that results in double decryption
 				if (title !== '$:/StoryList') {
+					const draftTitle = `Draft of '${title}'`;
+					if (this.wiki.tiddlerExists(draftTitle)) {
+						this.logger.alert(
+							`Notice: "${title}" was updated on another device while you have a draft open! Please review your changes before saving.`,
+						);
+						if ($tw.notifier) {
+							$tw.notifier.display('$:/plugins/valpackett/tiddlypwa/notif-conflict');
+						}
+					}
 					this.modifiedQueue.add(title);
 					this.changesChannel.postMessage({ title });
 				}
@@ -1307,6 +1368,12 @@ Formatted with `deno fmt`.
 				}
 			}
 			this.logger.log('sync done', url);
+			if (serverTimeHdr) {
+				const sDate = new Date(serverTimeHdr);
+				if (Number.isFinite(sDate.getTime()) && sDate > newestChg) {
+					newestChg = sDate;
+				}
+			}
 			if (lastSync > newestChg) {
 				newestChg = lastSync;
 			}
@@ -1315,51 +1382,56 @@ Formatted with `deno fmt`.
 
 		async _syncManyUnlocked(all) {
 			let hadSuccess = false;
-			const servers = [];
-			await new Promise((resolve) =>
-				this.db.transaction('syncservers').objectStore('syncservers').openCursor().onsuccess = (evt) => {
-					const cursor = evt.target.result;
-					if (!cursor) {
-						return resolve();
-					}
-					servers.push([cursor.key, cursor.value]);
-					cursor.continue();
-				}
-			);
-			for (const [key, server] of servers) {
-				try {
-					server.lastSync = await this._syncOneUnlocked(server, all);
-					await adb(this.db.transaction('syncservers', 'readwrite').objectStore('syncservers').put(server, key));
-					hadSuccess = true;
-					this.hadFetchError = false;
-				} catch (e) {
-					if (e.name === 'AbortError') {
-						/* Not an error */
-					} else if (e.name === 'FetchError') {
-						if (!this.hadFetchError) {
-							this.logger.alert(`Could not sync with server "${server.url}"! You might be offline (or the server is).`);
-							console.error(e);
-							this.hadFetchError = true;
+			try {
+				const servers = [];
+				await new Promise((resolve) =>
+					this.db.transaction('syncservers').objectStore('syncservers').openCursor().onsuccess = (evt) => {
+						const cursor = evt.target.result;
+						if (!cursor) {
+							return resolve();
 						}
-					} else {
-						this.logger.alert(`Could not sync with server "${server.url}"!`, e);
-						console.error(e);
+						servers.push([cursor.key, cursor.value]);
+						cursor.continue();
+					}
+				);
+				for (const [key, server] of servers) {
+					try {
+						server.lastSync = await this._syncOneUnlocked(server, all);
+						await adb(this.db.transaction('syncservers', 'readwrite').objectStore('syncservers').put(server, key));
+						hadSuccess = true;
+						this.hadFetchError = false;
+					} catch (e) {
+						if (e.name === 'AbortError') {
+							/* Not an error */
+						} else if (e.name === 'FetchError') {
+							if (!this.hadFetchError) {
+								this.logger.alert(
+									`Could not sync with server "${server.url}"! You might be offline (or the server is).`,
+								);
+								console.error(e);
+								this.hadFetchError = true;
+							}
+						} else {
+							this.logger.alert(`Could not sync with server "${server.url}"!`, e);
+							console.error(e);
+						}
 					}
 				}
-			}
-			$tw.syncer.syncFromServer(); // "server" being our local DB that we just updated, actually
-			await this.reflectSyncServers();
-			await this.reflectStorageInfo();
-			this.wiki.addTiddler({ title: '$:/status/TiddlyPWASyncing', text: 'no' });
-			$tw.utils.removeClass(document.body, 'tiddlypwa-syncing');
-			this.isSyncing = false;
-			if (this.afterSyncOnceHook && hadSuccess) {
-				this.afterSyncOnceHook();
-				delete this.afterSyncOnceHook;
-			}
-			if (this.wantResync) {
-				this.wantResync = false;
-				this.backgroundSync();
+				$tw.syncer.syncFromServer(); // "server" being our local DB that we just updated, actually
+				await this.reflectSyncServers();
+				await this.reflectStorageInfo();
+				if (this.afterSyncOnceHook && hadSuccess) {
+					this.afterSyncOnceHook();
+					delete this.afterSyncOnceHook;
+				}
+			} finally {
+				this.wiki.addTiddler({ title: '$:/status/TiddlyPWASyncing', text: 'no' });
+				$tw.utils.removeClass(document.body, 'tiddlypwa-syncing');
+				this.isSyncing = false;
+				if (this.wantResync) {
+					this.wantResync = false;
+					this.backgroundSync();
+				}
 			}
 		}
 

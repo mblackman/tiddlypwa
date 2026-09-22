@@ -8,6 +8,11 @@ export async function listen(args: any) {
 	const envvar = (name: string) => Deno.env.get(name) ?? denv[name];
 	const adminpwhash = (args.adminpwhash ?? envvar('ADMIN_PASSWORD_HASH'))?.trim();
 	const adminpwsalt = (args.adminpwsalt ?? envvar('ADMIN_PASSWORD_SALT'))?.trim();
+	if (!adminpwhash || !adminpwsalt) {
+		console.error('Error: ADMIN_PASSWORD_HASH and ADMIN_PASSWORD_SALT must be configured.');
+		console.error('Generate them using: deno run --allow-env server/hash-admin-password.ts');
+		Deno.exit(1);
+	}
 	const basepath = args.basepath ?? envvar('BASE_PATH') ?? '';
 	const dbPath = args.db ?? envvar('DB_PATH') ?? '.data/tiddly.db';
 	const lastSlash = dbPath.lastIndexOf('/');

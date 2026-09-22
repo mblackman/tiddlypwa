@@ -11,7 +11,7 @@ Formatted with `deno fmt`.
 
 'use strict';
 
-exports.tiddlypwa = function (source, prefix, options) {
+exports.tiddlypwa = function (source, prefix, _options) {
 	const results = [];
 
 	const pwaStorage = $tw.syncer.syncadaptor;
@@ -20,13 +20,13 @@ exports.tiddlypwa = function (source, prefix, options) {
 	}
 
 	if (prefix === '!') {
-		source(function (tiddler, title) {
+		source(function (_tiddler, title) {
 			if (pwaStorage.tiddlersInFile.has(title)) {
 				results.push(title);
 			}
 		});
 	} else {
-		source(function (tiddler, title) {
+		source(function (_tiddler, title) {
 			if (!pwaStorage.tiddlersInFile.has(title)) {
 				results.push(title);
 			}

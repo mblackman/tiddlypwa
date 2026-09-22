@@ -12,7 +12,12 @@ Formatted with `deno fmt`.
 
 	if (!$tw.browser || !('crypto' in window)) return;
 
-	const b64udec = (x) => Uint8Array.from(atob(x.replace(/_/g, '/').replace(/-/g, '+')), (c) => c.charCodeAt(0));
+	const b64udec = (x) => {
+		const b64 = x.replace(/_/g, '/').replace(/-/g, '+');
+		const pad = b64.length % 4;
+		const padded = pad ? b64 + '='.repeat(4 - pad) : b64;
+		return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+	};
 
 	const pubkey = crypto.subtle.importKey(
 		'jwk',

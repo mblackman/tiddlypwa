@@ -42,6 +42,7 @@ type tidjson = {
 	sbct?: string;
 	mtime?: Date;
 	deleted?: boolean;
+	baseMtime?: Date;
 };
 const sync = (token: string, authcode: string, now: Date, lastSync: Date, clientChanges: Array<tidjson>) =>
 	api({ op: 'sync', token, authcode, now, lastSync, clientChanges });
@@ -282,4 +283,181 @@ Deno.test('schema migration from version 1 to 2 preserves data and allows multi-
 	const wiki2Rows = [...ds.tiddlersChangedSince('wiki2', new Date(0))];
 	assertEquals(wiki2Rows.length, 1);
 	assertEquals(wiki2Rows[0].ct, testCt2);
+});
+
+Deno.test('exact token prefix matching and wildcard rejection', async () => {
+	const ds = new SQLiteDatastore();
+	const testApp = new TiddlyPWASyncApp(
+		ds,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	// Create wiki with uppercase and underscores
+	const tok = 'ABCdef_ghi_jkl_mno_pqr_stu_vwx_yz_1234567890';
+	ds.createWiki(tok, 'Test Wiki');
+
+	// Substring match with exact casing matches
+	const exactPrefix = tok.slice(0, 21);
+	const matchExact = await testApp.handle(new Request(`http://example.com/${exactPrefix}/bootstrap.json`));
+	assertEquals(matchExact.status, 200);
+
+	// Underscore wildcards (21 underscores) must NOT match
+	const wildcardResp = await testApp.handle(new Request('http://example.com/_____________________/bootstrap.json'));
+	assertEquals(wildcardResp.status, 404);
+
+	// Case sensitivity: lowercase must NOT match uppercase
+	const lowerPrefix = exactPrefix.toLowerCase();
+	const caseMismatch = await testApp.handle(new Request(`http://example.com/${lowerPrefix}/bootstrap.json`));
+	assertEquals(caseMismatch.status, 404);
+
+	// Disallowed characters like % must be rejected with 404
+	const percentPrefix = '%%%%%%%%%%%%%%%%%%%%%';
+	const percentResp = await testApp.handle(new Request(`http://example.com/${percentPrefix}/bootstrap.json`));
+	assertEquals(percentResp.status, 404);
+});
+
+Deno.test('invalid Date handling in sync rejects cleanly with EPROTO', async () => {
+	const tok = await createWiki();
+	const resp = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tok,
+				authcode: 'test',
+				now: 'not-a-valid-date',
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [{ thash: 'T3dP', ct: '1111' }],
+			}),
+		}),
+	);
+	assertEquals(resp.status, 400);
+	const body = await resp.json();
+	assertEquals(body, { error: 'EPROTO' });
+	await deleteWiki(tok);
+});
+
+Deno.test('malformed JSON and invalid requests return 400 EPROTO', async () => {
+	// Malformed JSON body
+	const malformedResp = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: 'not-valid-json{',
+		}),
+	);
+	assertEquals(malformedResp.status, 400);
+	assertEquals(await malformedResp.json(), { error: 'EPROTO' });
+
+	// Bad GET to /tid.dly without op=monitor returns 400
+	const badGetResp = await app.handle(new Request('http://example.com/tid.dly'));
+	assertEquals(badGetResp.status, 400);
+	assertEquals(await badGetResp.json(), { error: 'EPROTO' });
+});
+
+Deno.test('homePage Content-Length matches exact UTF-8 byte length', async () => {
+	const resp = await app.handle(new Request('http://example.com/'));
+	assertEquals(resp.status, 200);
+	const text = await resp.text();
+	const actualBytes = new TextEncoder().encode(text).length;
+	assertEquals(Number(resp.headers.get('content-length')), actualBytes);
+});
+
+Deno.test('basepath routing works with sub-paths', async () => {
+	const baseApp = new TiddlyPWASyncApp(
+		new SQLiteDatastore(),
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+		'/mywiki',
+	);
+
+	// Home page under /mywiki
+	const homeResp = await baseApp.handle(new Request('http://example.com/mywiki/'));
+	assertEquals(homeResp.status, 200);
+
+	// Home page under /mywiki (no trailing slash)
+	const homeNoSlashResp = await baseApp.handle(new Request('http://example.com/mywiki'));
+	assertEquals(homeNoSlashResp.status, 200);
+
+	// API endpoint under /mywiki/tid.dly
+	const apiResp = await baseApp.handle(
+		new Request('http://example.com/mywiki/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'list', atoken: 'test' }),
+		}),
+	);
+	assertEquals(apiResp.status, 200);
+	const listData = await apiResp.json();
+	assertEquals(Array.isArray(listData.wikis), true);
+});
+
+Deno.test('concurrent writes with stale baseMtime trigger conflict and stream canonical version', async () => {
+	const tok = await createWiki();
+	const sharedThash = 'RG9jdW1lbnQ='; // 'Document'
+	const time0 = new Date(1000);
+	const time1 = new Date(2000);
+	const time2 = new Date(3000);
+
+	// Initial commit: V0 created at time0
+	const initRes = await sync(tok, 'test', new Date(), new Date(0), [
+		{ thash: sharedThash, ct: 'dmVyc2lvbjA=', mtime: time0 },
+	]);
+	assertEquals(initRes, { appEtag: null, serverChanges: [] });
+
+	// Device A updates Document to V1 (baseMtime = time0, mtime = time1)
+	const devARes = await sync(tok, 'test', new Date(), time0, [
+		{ thash: sharedThash, ct: 'dmVyc2lvbjE=', mtime: time1, baseMtime: time0 },
+	]);
+	assertEquals(devARes, { appEtag: null, serverChanges: [] });
+
+	// Device B concurrently attempts to update Document to V2 based on V0 (baseMtime = time0, mtime = time2)
+	// Server must reject Device B's write because existing server mtime (time1) > baseMtime (time0)
+	const devBRes = await sync(tok, 'test', new Date(), time0, [
+		{ thash: sharedThash, ct: 'dmVyc2lvbjI=', mtime: time2, baseMtime: time0 },
+	]);
+	assertEquals(devBRes.conflicts, [sharedThash]);
+	assertEquals(devBRes.serverChanges.length, 1);
+	assertEquals(devBRes.serverChanges[0].thash, sharedThash);
+	assertEquals(devBRes.serverChanges[0].ct, 'dmVyc2lvbjE='); // Device A's canonical version is streamed back
+
+	// Verify server SQLite still holds Device A's version (V1)
+	const verifyRes = await sync(tok, 'test', new Date(), new Date(0), []);
+	assertEquals(verifyRes.serverChanges.length, 1);
+	assertEquals(verifyRes.serverChanges[0].ct, 'dmVyc2lvbjE=');
+
+	// Device B resolves conflict and syncs V3 based on Device A's V1 (baseMtime = time1, mtime = new Date(4000))
+	const time3 = new Date(4000);
+	const devBResolved = await sync(tok, 'test', new Date(), time1, [
+		{ thash: sharedThash, ct: 'dmVyc2lvbjM=', mtime: time3, baseMtime: time1 },
+	]);
+	assertEquals(devBResolved, { appEtag: null, serverChanges: [] });
+
+	// Verify server now has V3
+	const finalRes = await sync(tok, 'test', new Date(), time1, []);
+	assertEquals(finalRes.serverChanges.length, 1);
+	assertEquals(finalRes.serverChanges[0].ct, 'dmVyc2lvbjM=');
+
+	await deleteWiki(tok);
+});
+
+Deno.test('fallback conflict detection without baseMtime protects against older writes', async () => {
+	const tok = await createWiki();
+	const sharedThash = 'VGVzdERvYw==';
+	const time1 = new Date(2000);
+	const olderTime = new Date(1500);
+
+	// Commit newer version
+	await sync(tok, 'test', new Date(), new Date(0), [
+		{ thash: sharedThash, ct: 'bmV3ZXI=', mtime: time1 },
+	]);
+
+	// Attempt to overwrite with older timestamp and no baseMtime
+	const staleRes = await sync(tok, 'test', new Date(), new Date(0), [
+		{ thash: sharedThash, ct: 'b2xkZXI=', mtime: olderTime },
+	]);
+	assertEquals(staleRes.conflicts, [sharedThash]);
+	assertEquals(staleRes.serverChanges.length, 1);
+	assertEquals(staleRes.serverChanges[0].ct, 'bmV3ZXI=');
+
+	await deleteWiki(tok);
 });

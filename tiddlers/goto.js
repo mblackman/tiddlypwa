@@ -27,7 +27,13 @@ Formatted with `deno fmt`.
 			const button = this.document.createElement('button');
 			button.textContent = 'Go!';
 			form.appendChild(button);
-			let visited = localStorage.visitedWikis?.split(',') || [];
+			let visited = [];
+			try {
+				visited = JSON.parse(localStorage.visitedWikis || '[]');
+				if (!Array.isArray(visited)) visited = [];
+			} catch (_e) {
+				visited = [];
+			}
 			if (visited.length > 0) {
 				const vdiv = this.document.createElement('div');
 				vdiv.textContent = 'Recently visited: ';
@@ -42,7 +48,7 @@ Formatted with `deno fmt`.
 						e.stopPropagation();
 						e.preventDefault();
 						visited = visited.filter((x) => x !== slug);
-						localStorage.visitedWikis = visited;
+						localStorage.visitedWikis = JSON.stringify(visited);
 						vdiv.removeChild(wlink);
 					};
 					wlink.appendChild(del);
@@ -56,7 +62,7 @@ Formatted with `deno fmt`.
 				const slug = encodeURIComponent(input.value);
 				if (!visited.find((x) => x === slug)) {
 					visited.push(slug);
-					localStorage.visitedWikis = visited;
+					localStorage.visitedWikis = JSON.stringify(visited);
 				}
 				location.href = `/w/${slug}/app.html`;
 			};

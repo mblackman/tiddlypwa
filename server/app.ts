@@ -3,7 +3,7 @@ import { decodeBase64, encodeBase64 } from '@std/encoding/base64';
 import * as argon from 'argon2ian';
 import * as brotli from 'brotli';
 import { homePage } from './pages.ts';
-import { Datastore, Wiki } from './data.d.ts';
+import { Datastore, Tiddler, Wiki } from './data.d.ts';
 
 const utfenc = new TextEncoder();
 
@@ -65,10 +65,14 @@ function processEtag(etag: Uint8Array, headers: Headers): [boolean, string] {
 	return [supportsBrotli, '"' + encodeBase64Url(etag) + (supportsBrotli ? '-b' : '-x') + '"'];
 }
 
+const monitorChannels = new Map<string, BroadcastChannel>();
 function notifyMonitors(token: string, browserToken: string) {
-	const chan = new BroadcastChannel(token);
+	let chan = monitorChannels.get(token);
+	if (!chan) {
+		chan = new BroadcastChannel(token);
+		monitorChannels.set(token, chan);
+	}
 	chan.postMessage({ exclude: browserToken });
-	// chan.close(); // -> Uncaught (in promise) BadResource: Bad resource ID ?!
 }
 
 // ReadableStreamDefaultControllerCallback is deprecated
@@ -88,10 +92,11 @@ export class TiddlyPWASyncApp {
 		this.db = db;
 		this.adminpwsalt = decodeBase64Url(adminpwsalt);
 		this.adminpwhash = decodeBase64Url(adminpwhash);
-		this.basepath = basepath;
+		this.basepath = basepath.endsWith('/') ? basepath.slice(0, -1) : basepath;
 	}
 
 	adminPasswordCorrect(atoken: string) {
+		if (this.adminpwsalt.length === 0 || this.adminpwhash.length === 0) return false;
 		return argon.verify(utfenc.encode(atoken), this.adminpwsalt, this.adminpwhash);
 	}
 
@@ -107,13 +112,50 @@ export class TiddlyPWASyncApp {
 		) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (Math.abs(new Date(now).getTime() - new Date().getTime()) > 60000) {
+		const nowDate = new Date(now);
+		const modsince = new Date(lastSync);
+		if (!Number.isFinite(nowDate.getTime()) || !Number.isFinite(modsince.getTime())) {
+			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+		}
+		if (Math.abs(nowDate.getTime() - Date.now()) > 60000) {
 			return Response.json({ error: 'ETIMESYNC' }, { headers: respHdrs, status: 400 });
 		}
 		if ((wiki as Wiki).authcode && authcode !== (wiki as Wiki).authcode) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
-		const modsince = new Date(lastSync);
+
+		const decodedChanges: Tiddler[] = [];
+		try {
+			for (const change of clientChanges) {
+				if (!change || typeof change !== 'object' || typeof change.thash !== 'string') {
+					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+				}
+				const { thash, iv, ct, sbiv, sbct, mtime, deleted, baseMtime } = change;
+				const itemMtime = mtime ? new Date(mtime) : nowDate;
+				if (!Number.isFinite(itemMtime.getTime())) {
+					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+				}
+				let itemBaseMtime: Date | undefined;
+				if (baseMtime !== undefined && baseMtime !== null) {
+					itemBaseMtime = new Date(baseMtime);
+					if (!Number.isFinite(itemBaseMtime.getTime())) {
+						return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+					}
+				}
+				decodedChanges.push({
+					thash: decodeBase64(thash),
+					iv: iv ? decodeBase64(iv) : undefined,
+					ct: ct ? decodeBase64(ct) : undefined,
+					sbiv: sbiv ? decodeBase64(sbiv) : undefined,
+					sbct: sbct ? decodeBase64(sbct) : undefined,
+					mtime: itemMtime,
+					deleted: Boolean(deleted),
+					baseMtime: itemBaseMtime,
+				});
+			}
+		} catch (_e) {
+			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+		}
 
 		// assuming here that the browser would use the same Accept-Encoding as when requesting the page
 		const apphtml = this.db.getWikiFile(token, 'app.html');
@@ -122,15 +164,21 @@ export class TiddlyPWASyncApp {
 		return streamsponse((ctrl) => {
 			ctrl.enqueue(`{"appEtag":${JSON.stringify(appEtag)},"serverChanges":[`);
 
+			let hasWritten = false;
+			const conflicts: string[] = [];
+
 			this.db.transaction(() => {
 				if (!(wiki as Wiki).authcode && authcode) this.db.updateWikiAuthcode(token, authcode);
 				if (!(wiki as Wiki).salt && salt) this.db.updateWikiSalt(token, salt as string);
 				let firstWritten = false;
+				const streamedHashes = new Set<string>();
+
 				for (const { thash, iv, ct, sbiv, sbct, mtime, deleted } of this.db.tiddlersChangedSince(token, modsince)) {
-					// console.log('ServHas', encodeBase64(thash as Uint8Array), mtime, modsince, mtime < modsince);
+					const b64hash = thash ? encodeBase64(thash) : null;
+					if (b64hash) streamedHashes.add(b64hash);
 					ctrl.enqueue(
 						(firstWritten ? '\n,' : '\n') + JSON.stringify({
-							thash: thash ? encodeBase64(thash) : null,
+							thash: b64hash,
 							iv: iv ? encodeBase64(iv) : null,
 							ct: ct ? encodeBase64(ct) : null,
 							sbiv: sbiv ? encodeBase64(sbiv) : null,
@@ -141,24 +189,43 @@ export class TiddlyPWASyncApp {
 					);
 					if (!firstWritten) firstWritten = true;
 				}
-				// console.log('ClntChg', clientChanges);
-				for (const { thash, iv, ct, sbiv, sbct, mtime, deleted } of clientChanges) {
-					this.db.upsertTiddler(token, {
-						thash: decodeBase64(thash),
-						iv: iv && decodeBase64(iv),
-						ct: ct && decodeBase64(ct),
-						sbiv: sbiv && decodeBase64(sbiv),
-						sbct: sbct && decodeBase64(sbct),
-						mtime: new Date(mtime || now),
-						deleted: deleted || false,
-					});
+				for (const change of decodedChanges) {
+					const res = this.db.upsertTiddler(token, change);
+					if (res.conflict) {
+						const b64hash = encodeBase64(change.thash);
+						conflicts.push(b64hash);
+						if (!streamedHashes.has(b64hash)) {
+							const existingTid = this.db.getTiddler(token, change.thash);
+							if (existingTid) {
+								streamedHashes.add(b64hash);
+								ctrl.enqueue(
+									(firstWritten ? '\n,' : '\n') + JSON.stringify({
+										thash: b64hash,
+										iv: existingTid.iv ? encodeBase64(existingTid.iv) : null,
+										ct: existingTid.ct ? encodeBase64(existingTid.ct) : null,
+										sbiv: existingTid.sbiv ? encodeBase64(existingTid.sbiv) : null,
+										sbct: existingTid.sbct ? encodeBase64(existingTid.sbct) : null,
+										mtime: existingTid.mtime,
+										deleted: existingTid.deleted,
+									}),
+								);
+								if (!firstWritten) firstWritten = true;
+							}
+						}
+					} else if (res.success) {
+						hasWritten = true;
+					}
 				}
 			});
-			ctrl.enqueue('\n]}');
+			if (conflicts.length > 0) {
+				ctrl.enqueue(`\n],"conflicts":${JSON.stringify(conflicts)}}`);
+			} else {
+				ctrl.enqueue('\n]}');
+			}
 			ctrl.close();
-			if (clientChanges.length > 0 && typeof browserToken === 'string') notifyMonitors(token, browserToken);
+			if (hasWritten && typeof browserToken === 'string') notifyMonitors(token, browserToken);
 		}, {
-			headers: { ...respHdrs, 'content-type': 'application/json' },
+			headers: { ...respHdrs, 'content-type': 'application/json', 'x-server-time': nowDate.toISOString() },
 		});
 	}
 
@@ -203,6 +270,14 @@ export class TiddlyPWASyncApp {
 	) {
 		if (typeof files !== 'object' || !files) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+		}
+		for (const [filename, value] of Object.entries(files)) {
+			if (
+				typeof filename !== 'string' || typeof value !== 'object' || !value ||
+				typeof (value as any).body !== 'string' || typeof (value as any).ctype !== 'string'
+			) {
+				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+			}
 		}
 		if ((wiki as Wiki).authcode && authcode !== (wiki as Wiki).authcode) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
@@ -279,8 +354,11 @@ export class TiddlyPWASyncApp {
 
 	@route(['GET', 'HEAD', 'OPTIONS'], '/:halftoken/:filename')
 	handleAppFile(req: Request, { halftoken, filename }: Record<string, string>) {
+		if (!halftoken || halftoken.length < 21 || !/^[A-Za-z0-9_-]+$/.test(halftoken)) {
+			return Response.json({ error: 'EEXIST' }, { headers: respHdrs, status: 404 });
+		}
 		const wiki = this.db.getWikiByPrefix(halftoken);
-		if (!wiki || halftoken.length < 21) {
+		if (!wiki) {
 			return Response.json({ error: 'EEXIST' }, { headers: respHdrs, status: 404 });
 		}
 		if (req.method === 'OPTIONS') {
@@ -330,8 +408,13 @@ export class TiddlyPWASyncApp {
 			return this.preflightResp('POST, GET, OPTIONS');
 		}
 		if (req.method === 'POST') {
-			const data = await req.json();
-			if (typeof data !== 'object' || data.tiddlypwa !== 1 || !data.op) {
+			let data: any;
+			try {
+				data = await req.json();
+			} catch (_e) {
+				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+			}
+			if (typeof data !== 'object' || !data || data.tiddlypwa !== 1 || !data.op) {
 				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 			}
 			if (data.op === 'sync') return this.handleSync(data, req.headers);
@@ -345,14 +428,14 @@ export class TiddlyPWASyncApp {
 			const query = new URL(req.url).searchParams;
 			if (query.get('op') === 'monitor') return this.handleMonitor(query);
 		}
-		return Response.json({ error: 'EPROTO' });
+		return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 	}
 
 	@route(['GET', 'HEAD'], '/')
 	handleHomePage(req: Request) {
 		const headers = new Headers({
 			'content-type': 'text/html;charset=utf-8',
-			'content-length': homePage.length.toString(),
+			'content-length': new TextEncoder().encode(homePage).length.toString(),
 			'cache-control': 'no-cache',
 			'x-content-type-options': 'nosniff',
 			'x-frame-options': 'SAMEORIGIN',
@@ -363,9 +446,18 @@ export class TiddlyPWASyncApp {
 	}
 
 	async handle(req: Request): Promise<Response> {
-		return this.handleAppFile(req, {/* XXX: decorators 2 don't affect types.. */}) ||
-			await this.handleApiEndpoint(req) ||
-			this.handleHomePage(req) ||
+		let effectiveReq = req;
+		if (this.basepath) {
+			const url = new URL(req.url);
+			if (url.pathname === this.basepath || url.pathname.startsWith(this.basepath + '/')) {
+				const strippedPath = url.pathname.slice(this.basepath.length) || '/';
+				url.pathname = strippedPath;
+				effectiveReq = new Request(url.toString(), req);
+			}
+		}
+		return this.handleAppFile(effectiveReq, {/* XXX: decorators 2 don't affect types.. */}) ||
+			await this.handleApiEndpoint(effectiveReq) ||
+			this.handleHomePage(effectiveReq) ||
 			Response.json({}, { headers: respHdrs, status: 404 });
 	}
 }

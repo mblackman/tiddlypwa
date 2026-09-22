@@ -106,7 +106,7 @@ export class SQLiteDatastore extends DB implements Datastore {
 	}
 
 	#wikiQueryPrefix = this.prepareQuery<[], Wiki>(
-		sql`SELECT token, authcode, salt, note FROM wikis WHERE token LIKE :halftoken || '%'`,
+		sql`SELECT token, authcode, salt, note FROM wikis WHERE substr(token, 1, length(:halftoken)) = :halftoken`,
 	);
 	getWikiByPrefix(halftoken: string) {
 		const rows = this.#wikiQueryPrefix.allEntries({ halftoken });
@@ -166,7 +166,7 @@ export class SQLiteDatastore extends DB implements Datastore {
 	#wikiFileQuery = this.prepareQuery<[], File>(sql`
 		SELECT files.etag AS etag, rawsize, ctype, body
 		FROM files, wikifiles
-		WHERE files.etag = wikifiles.etag AND wikifiles.name = :name AND wikifiles.token LIKE :halftoken || '%'
+		WHERE files.etag = wikifiles.etag AND wikifiles.name = :name AND substr(wikifiles.token, 1, length(:halftoken)) = :halftoken
 	`);
 	getWikiFile(halftoken: string, name: string) {
 		const rows = this.#wikiFileQuery.allEntries({ halftoken, name });
@@ -196,19 +196,88 @@ export class SQLiteDatastore extends DB implements Datastore {
 		}
 	}
 
-	#upsertQuery = this.prepareQuery(sql`
+	#tiddlerQuery = this.prepareQuery<
+		[],
+		{
+			thash: Uint8Array;
+			iv?: Uint8Array;
+			ct?: Uint8Array;
+			sbiv?: Uint8Array;
+			sbct?: Uint8Array;
+			mtime: number;
+			deleted: number;
+		}
+	>(sql`
+		SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
+		FROM tiddlers WHERE token = :token AND thash = :thash
+	`);
+	getTiddler(token: string, thash: Uint8Array): Tiddler | undefined {
+		const rows = this.#tiddlerQuery.allEntries({ token, thash });
+		if (rows.length < 1) return;
+		return { ...rows[0], mtime: parseTime(rows[0].mtime), deleted: Boolean(rows[0].deleted) };
+	}
+
+	#insertQuery = this.prepareQuery(sql`
 		INSERT INTO tiddlers (token, thash, iv, ct, sbiv, sbct, mtime, deleted)
 		VALUES (:token, :thash, :iv, :ct, :sbiv, :sbct, :mtime, :deleted)
-		ON CONFLICT (token, thash) DO UPDATE SET
-		iv = excluded.iv,
-		ct = excluded.ct,
-		sbiv = excluded.sbiv,
-		sbct = excluded.sbct,
-		mtime = excluded.mtime,
-		deleted = excluded.deleted
-		WHERE excluded.mtime > mtime
+		ON CONFLICT (token, thash) DO NOTHING
 	`);
-	upsertTiddler(token: string, tiddler: Tiddler) {
-		this.#upsertQuery.execute({ ...tiddler, mtime: tiddler.mtime.getTime(), token });
+
+	#updateQuery = this.prepareQuery(sql`
+		UPDATE tiddlers SET
+			iv = :iv,
+			ct = :ct,
+			sbiv = :sbiv,
+			sbct = :sbct,
+			mtime = :mtime,
+			deleted = :deleted
+		WHERE token = :token AND thash = :thash
+	`);
+
+	upsertTiddler(token: string, tiddler: Tiddler): { success: boolean; conflict?: boolean } {
+		const existing = this.#tiddlerQuery.allEntries({ token, thash: tiddler.thash });
+		const mtimeMs = tiddler.mtime.getTime();
+
+		if (existing.length > 0) {
+			const existingMtime = existing[0].mtime;
+			if (tiddler.baseMtime !== undefined) {
+				const baseMtimeMs = tiddler.baseMtime.getTime();
+				if (existingMtime > baseMtimeMs) {
+					return { success: false, conflict: true };
+				}
+			} else {
+				// Fallback if no baseMtime provided (backward compatibility)
+				if (existingMtime >= mtimeMs) {
+					return { success: false, conflict: true };
+				}
+			}
+			this.#updateQuery.execute({
+				token,
+				thash: tiddler.thash,
+				iv: tiddler.iv,
+				ct: tiddler.ct,
+				sbiv: tiddler.sbiv,
+				sbct: tiddler.sbct,
+				mtime: mtimeMs,
+				deleted: tiddler.deleted ? 1 : 0,
+			});
+			return { success: true };
+		} else {
+			this.#insertQuery.execute({
+				token,
+				thash: tiddler.thash,
+				iv: tiddler.iv,
+				ct: tiddler.ct,
+				sbiv: tiddler.sbiv,
+				sbct: tiddler.sbct,
+				mtime: mtimeMs,
+				deleted: tiddler.deleted ? 1 : 0,
+			});
+			if (this.changes === 0) {
+				// Failed to insert due to concurrent conflict
+				return { success: false, conflict: true };
+			}
+			return { success: true };
+		}
 	}
 }
