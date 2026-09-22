@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/notif-sw-error
+title: $:/plugins/mblackman/tiddlypwa/notif-sw-error
 
 Failed to initialize offline support: {{$:/status/TiddlyPWAWorkerError}}
 

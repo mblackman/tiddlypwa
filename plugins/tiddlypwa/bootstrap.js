@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/tiddlypwa/bootstrap.js
+title: $:/plugins/mblackman/tiddlypwa/bootstrap.js
 type: application/javascript
 module-type: library
 

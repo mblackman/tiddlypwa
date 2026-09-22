@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/notif-refresh
+title: $:/plugins/mblackman/tiddlypwa/notif-refresh
 tags: $:/tags/PageTemplate
 
 <$reveal type="nomatch" state="$:/temp/HideUpdate" text="yes">

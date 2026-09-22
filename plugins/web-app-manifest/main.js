@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/web-app-manifest/main.js
+title: $:/plugins/mblackman/web-app-manifest/main.js
 type: application/javascript
 module-type: startup
 
@@ -44,15 +44,15 @@ Formatted with `deno fmt`.
 				URL.revokeObjectURL(link.href);
 			} catch (_e) { /* probably was initial/empty */ }
 			const manifest = {
-				name: $tw.wiki.renderTiddler('text/plain', '$:/plugins/valpackett/web-app-manifest/name'),
+				name: $tw.wiki.renderTiddler('text/plain', '$:/plugins/mblackman/web-app-manifest/name'),
 				display: 'standalone',
 				theme_color: $tw.wiki.renderTiddler(
 					'text/plain',
-					'$:/plugins/valpackett/web-app-manifest/theme-color',
+					'$:/plugins/mblackman/web-app-manifest/theme-color',
 				),
 				background_color: $tw.wiki.renderTiddler(
 					'text/plain',
-					'$:/plugins/valpackett/web-app-manifest/background-color',
+					'$:/plugins/mblackman/web-app-manifest/background-color',
 				),
 				icons: [],
 			};

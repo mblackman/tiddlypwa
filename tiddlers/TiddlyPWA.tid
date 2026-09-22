@@ -6,7 +6,7 @@ Have you ever wanted to combine the power and customizability of [[TiddlyWiki|ht
 the convenience of a modern offline-friendly, encrypted, synced notes app? Now you can! With…
 
 <div class="tpwadoc-logos" role="presentation">
-	{{$:/plugins/valpackett/tiddlypwa/icon}}
+	{{$:/plugins/mblackman/tiddlypwa/icon}}
 	{{$:/biglogo.svg}}
 </div>
 
@@ -52,17 +52,17 @@ with ''encrypted'' local persistent storage and efficient ''synchronization'' wi
 !! Contribute
 
 <div class="tpwadoc-row">
-	<a class="tpwadoc-card tpwadoc-card-codeberg" href="https://codeberg.org/valpackett/tiddlypwa">
+	<a class="tpwadoc-card tpwadoc-card-github" href="https://github.com/mblackman/tiddlypwa">
 		<div class="tpwadoc-icon">⌨️</div>
-		<div class="tpwadoc-title">Codeberg</div>
+		<div class="tpwadoc-title">GitHub</div>
 		<div class="tpwadoc-subtitle">Star the project, report an issue, or contribute code</div>
 	</a>
 	<a class="tpwadoc-card tpwadoc-card-patreon" href="https://www.patreon.com/valpackett">
 		<div class="tpwadoc-icon">💸</div>
 		<div class="tpwadoc-title">Patreon</div>
-		<div class="tpwadoc-subtitle">Support the author with some cash money, every dollar counts</div>
+		<div class="tpwadoc-subtitle">Support Val Packett, the original creator of TiddlyPWA</div>
 	</a>
 </div>
 
-TiddlyPWA is a project of [[Val Packett|https://val.packett.cool/]] 2022-2024.
-[[No rights reserved|$:/plugins/valpackett/tiddlypwa/license]]. Trans rights 🏳️‍⚧️
+TiddlyPWA is maintained by [[Matt Blackman|https://github.com/mblackman]] (2026–present), originally created by [[Val Packett|https://val.packett.cool/]] (2022–2024).
+[[No rights reserved|$:/plugins/mblackman/tiddlypwa/license]]. Trans rights 🏳️‍⚧️

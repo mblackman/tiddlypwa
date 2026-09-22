@@ -1,12 +1,12 @@
 {
 	"name": "TiddlyPWA",
-	"title": "$:/plugins/valpackett/tiddlypwa",
+	"title": "$:/plugins/mblackman/tiddlypwa",
 	"description": "Offline-first storage & sync solution",
-	"author": "Val Packett",
+	"author": "Matt Blackman",
 	"version": "0.2.2",
 	"core-version": ">=5.2.0",
 	"list": "readme filters license",
-	"source": "https://codeberg.org/valpackett/tiddlypwa",
-	"demo": "https://tiddly.packett.cool/",
+	"source": "https://github.com/mblackman/tiddlypwa",
+	"demo": "https://github.com/mblackman/tiddlypwa",
 	"plugin-type": "plugin"
 }

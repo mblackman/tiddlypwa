@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/notif-remembered
+title: $:/plugins/mblackman/tiddlypwa/notif-remembered
 
 The password has been saved.
 You can <$button message="tiddlypwa-forget">forget it</$button> if that was a mistake.

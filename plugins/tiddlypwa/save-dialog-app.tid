@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/save-dialog-app
+title: $:/plugins/mblackman/tiddlypwa/save-dialog-app
 tags: $:/tags/TiddlyPWA/SaveDialog
 caption: Save App Wiki
 
@@ -23,7 +23,7 @@ However, that file (which we call "the app wiki") still stores ''plugins'' and '
 
 You can
 <$button>
-<$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/valpackett/tiddlypwa/app-filter}} />
+<$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/mblackman/tiddlypwa/app-filter}} />
 upload the app wiki to sync servers
 </$button>
 now.
@@ -33,11 +33,11 @@ now.
 <details>
 <summary>Advanced options…</summary>
 <p>You can upload it to a sync server you are not currently syncing with:</p>
-<$transclude $tiddler="$:/plugins/valpackett/tiddlypwa/upload-app-form" $mode="block"/>
+<$transclude $tiddler="$:/plugins/mblackman/tiddlypwa/upload-app-form" $mode="block"/>
 <p>
 You can also
 <$button>
-<$action-sendmessage $message="tm-download-file" publishFilter={{$:/plugins/valpackett/tiddlypwa/app-filter}} />
+<$action-sendmessage $message="tm-download-file" publishFilter={{$:/plugins/mblackman/tiddlypwa/app-filter}} />
 save it locally
 </$button>.
 </p>
@@ -48,7 +48,7 @@ save it locally
 <details>
 <summary>Which tiddlers are saved in the app wiki?…</summary>
 <ul>
-<$list filter={{$:/plugins/valpackett/tiddlypwa/app-filter}}>
+<$list filter={{$:/plugins/mblackman/tiddlypwa/app-filter}}>
 <li><<currentTiddler>></li>
 </$list>
 </ul>

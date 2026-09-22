@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/tiddlypwa/encoding.js
+title: $:/plugins/mblackman/tiddlypwa/encoding.js
 type: application/javascript
 module-type: library
 

@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/tiddlypwa/saver.js
+title: $:/plugins/mblackman/tiddlypwa/saver.js
 type: application/javascript
 module-type: saver
 
@@ -25,7 +25,7 @@ Formatted with `deno fmt`.
 
 		save(_text, _method, _cb, _options) {
 			if ($tw.syncadaptor.isReady()) {
-				$tw.modal.display('$:/plugins/valpackett/tiddlypwa/save-dialog', {});
+				$tw.modal.display('$:/plugins/mblackman/tiddlypwa/save-dialog', {});
 			} else {
 				alert('No saving in TiddlyPWA installer/documentation mode!');
 			}

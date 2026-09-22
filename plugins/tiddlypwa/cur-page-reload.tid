@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/cur-page-reload
+title: $:/plugins/mblackman/tiddlypwa/cur-page-reload
 
 — ''current page'', 
 <$button message="tiddlypwa-browser-refresh-force" tooltip={{$:/language/Buttons/Refresh/Hint}} aria-label={{$:/language/Buttons/Refresh/Caption}} class=<<tv-config-toolbar-class>>>

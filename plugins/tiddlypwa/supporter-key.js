@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/tiddlypwa/supporter-key
+title: $:/plugins/mblackman/tiddlypwa/supporter-key
 type: application/javascript
 module-type: widget
 

@@ -6,7 +6,7 @@ title: GettingStarted
 <$set name="tv-config-toolbar-text" value="yes">
 <$set name="tv-config-toolbar-class" value="">
 
-Welcome to your new ~TiddlyWiki super-powered by [[TiddlyPWA|$:/plugins/valpackett/tiddlypwa]]!
+Welcome to your new ~TiddlyWiki super-powered by [[TiddlyPWA|$:/plugins/mblackman/tiddlypwa]]!
 
 !! Set up this ~TiddlyWiki
 
@@ -47,15 +47,15 @@ You already have a sync server configured, so your changes are automatically syn
 <$reveal type="match" state="$:/status/TiddlyPWAWasLocalOnly" text="yes">
 Now, it is also recommended to store the app wiki on it as well and load it from there.
 That way, you could easily install plugins/themes, and setting it up on new devices would be easier. Use the
-"{{$:/plugins/valpackett/tiddlypwa/save-dialog-app!!caption}}" tab in the {{$:/core/ui/Buttons/save-wiki}} menu to upload the app wiki to the sync server.
+"{{$:/plugins/mblackman/tiddlypwa/save-dialog-app!!caption}}" tab in the {{$:/core/ui/Buttons/save-wiki}} menu to upload the app wiki to the sync server.
 You would receive a link to load the wiki from when doing that.
 </$reveal>
 </$reveal>
 <$reveal type="lteq" state="$:/status/TiddlyPWAServerCount" text="0">
 You do not have a sync server configured, so your changes are currently only stored in this device/browser. You can
 <$button>
-<$action-setfield $tiddler="$:/state/tab-1749438307" text="$:/plugins/valpackett/tiddlypwa/config"/>
-<$action-setfield $tiddler="$:/state/tab--84302341" text="$:/plugins/valpackett/tiddlypwa/config-sync"/>
+<$action-setfield $tiddler="$:/state/tab-1749438307" text="$:/plugins/mblackman/tiddlypwa/config"/>
+<$action-setfield $tiddler="$:/state/tab--84302341" text="$:/plugins/mblackman/tiddlypwa/config-sync"/>
 <$action-navigate $to="$:/ControlPanel"/>
 configure a sync server in the control panel
 </$button>.
@@ -63,8 +63,8 @@ configure a sync server in the control panel
 
 Do make backups of your content, especially since TiddlyPWA is still beta quality software!
 You can use the {{$:/core/ui/Buttons/export-page}} feature (which does not provide encryption), but you can also use
-the "{{$:/plugins/valpackett/tiddlypwa/save-dialog-export!!caption}}" tab in the {{$:/core/ui/Buttons/save-wiki}} menu to export the wiki as a traditional single-file TiddlyWiki
+the "{{$:/plugins/mblackman/tiddlypwa/save-dialog-export!!caption}}" tab in the {{$:/core/ui/Buttons/save-wiki}} menu to export the wiki as a traditional single-file TiddlyWiki
 (with encryption if you want).
 
-To learn more about how TiddlyPWA works and to support the author, visit <a class="tc-tiddlylink-external" href={{$:/plugins/valpackett/tiddlypwa!!demo}}>the official website</a>.
+To learn more about how TiddlyPWA works or contribute to development, visit <a class="tc-tiddlylink-external" href={{$:/plugins/mblackman/tiddlypwa!!source}}>the GitHub repository</a>.
 Enjoy your wiki!

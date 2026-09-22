@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/tiddlypwa/main.js
+title: $:/plugins/mblackman/tiddlypwa/main.js
 type: application/javascript
 module-type: syncadaptor
 
@@ -76,8 +76,8 @@ Formatted with `deno fmt`.
 	};
 
 	const utfenc = new TextEncoder('utf-8');
-	const { b64enc, b64dec, encodeData, decodeData } = require('$:/plugins/valpackett/tiddlypwa/encoding.js');
-	const { BootstrapModal } = require('$:/plugins/valpackett/tiddlypwa/bootstrap.js');
+	const { b64enc, b64dec, encodeData, decodeData } = require('$:/plugins/mblackman/tiddlypwa/encoding.js');
+	const { BootstrapModal } = require('$:/plugins/mblackman/tiddlypwa/bootstrap.js');
 
 	function adb(req) {
 		return new Promise((resolve, reject) => {
@@ -233,7 +233,7 @@ Formatted with `deno fmt`.
 						_evt,
 					) => {
 						this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: 'yes' });
-						$tw.notifier.display('$:/plugins/valpackett/tiddlypwa/notif-remembered');
+						$tw.notifier.display('$:/plugins/mblackman/tiddlypwa/notif-remembered');
 						this.sessionChannel.postMessage(true);
 					};
 			});
@@ -299,7 +299,7 @@ Formatted with `deno fmt`.
 			});
 
 			$tw.rootWidget.addEventListener('tiddlypwa-open-save-dialog', (_evt) => {
-				$tw.modal.display('$:/plugins/valpackett/tiddlypwa/sync-dialog', {});
+				$tw.modal.display('$:/plugins/mblackman/tiddlypwa/sync-dialog', {});
 			});
 
 			$tw.rootWidget.addEventListener('tiddlypwa-upload-app-wiki', (evt) => {
@@ -363,7 +363,7 @@ Formatted with `deno fmt`.
 				if (!navigator.onLine) return;
 				if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
 				$tw.wiki.addTiddler({ title: '$:/status/TiddlyPWAWorkerError', text: e.message });
-				$tw.notifier.display('$:/plugins/valpackett/tiddlypwa/notif-sw-error');
+				$tw.notifier.display('$:/plugins/mblackman/tiddlypwa/notif-sw-error');
 			}
 		}
 
@@ -779,7 +779,7 @@ Formatted with `deno fmt`.
 					this.modal.setBody('<p>Welcome back! Please enter your password.</p>');
 					this.modal.showForm();
 				}
-				const AW = require('$:/plugins/valpackett/tiddlypwa/argon2ian.js').ArgonWorker;
+				const AW = require('$:/plugins/mblackman/tiddlypwa/argon2ian.js').ArgonWorker;
 				const argon = new AW();
 				await argon.ready;
 				let checked = false;
@@ -1043,7 +1043,7 @@ Formatted with `deno fmt`.
 		}
 
 		async uploadAppWiki(variables) {
-			if (!this.wiki.getTiddler('$:/core') || !this.wiki.getTiddler('$:/plugins/valpackett/tiddlypwa')) {
+			if (!this.wiki.getTiddler('$:/core') || !this.wiki.getTiddler('$:/plugins/mblackman/tiddlypwa')) {
 				this.logger.alert(
 					'You have deleted the TiddlyPWA plugin and tried to save the app HTML to the server! Refusing to self-destruct.',
 				);
@@ -1056,7 +1056,7 @@ Formatted with `deno fmt`.
 				$tw.wiki.getTiddlerText('$:/config/SaveWikiButton/Template', '$:/core/save/all'),
 				{ variables },
 			);
-			const swjs = $tw.wiki.renderTiddler('text/plain', '$:/plugins/valpackett/tiddlypwa/sw.js', {});
+			const swjs = $tw.wiki.renderTiddler('text/plain', '$:/plugins/mblackman/tiddlypwa/sw.js', {});
 			try {
 				const servers = (variables.uploadUrl && variables.uploadToken)
 					? [{ url: variables.uploadUrl, token: variables.uploadToken }]
@@ -1103,7 +1103,7 @@ Formatted with `deno fmt`.
 					const href = new URL((await resp.json()).urlprefix + 'app.html', new URL(url, document.location)).href;
 					const isCurrent = isCurrentUrl(href);
 					urls.push(
-						href + (isCurrent ? ' {{$:/plugins/valpackett/tiddlypwa/cur-page-reload}}' : ''),
+						href + (isCurrent ? ' {{$:/plugins/mblackman/tiddlypwa/cur-page-reload}}' : ''),
 					);
 					if (isCurrent) {
 						// This makes sure we instantly reload into the new version!

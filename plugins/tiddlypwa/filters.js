@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/tiddlypwa/filters.js
+title: $:/plugins/mblackman/tiddlypwa/filters.js
 type: application/javascript
 module-type: isfilteroperator
 

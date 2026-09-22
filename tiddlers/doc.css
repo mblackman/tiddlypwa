@@ -27,7 +27,7 @@ Licensed under 0BSD, see license.tid.
 .tpwadoc-card-upload {--bg:#e0ffdf;}
 .tpwadoc-card-sync {--bg:#93ebff;}
 .tpwadoc-card-crypt {--bg:#fbd16c;}
-.tpwadoc-card-codeberg {--bg:#b8aeff;}
+.tpwadoc-card-github, .tpwadoc-card-codeberg {--bg:#b8aeff;}
 .tpwadoc-card-patreon {--bg:#ffab91;}
 .tpwadoc-card-glitch {--bg:#ff7698;}
 .tpwadoc-card-diy {--bg:#eaeaea;}

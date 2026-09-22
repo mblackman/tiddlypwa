@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/web-app-manifest/theme-color
+title: $:/plugins/mblackman/web-app-manifest/theme-color
 
 \import [[$:/core/ui/PageMacros]] [all[shadows+tiddlers]tag[$:/tags/Macro]!has[draft.of]]
 <<colour primary>>

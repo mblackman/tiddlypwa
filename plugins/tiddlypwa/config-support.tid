@@ -1,8 +1,8 @@
-title: $:/plugins/valpackett/tiddlypwa/config-xsupport
+title: $:/plugins/mblackman/tiddlypwa/config-xsupport
 tags: $:/tags/ControlPanel/TiddlyPWA
 caption: Support TiddlyPWA
 
-[[TiddlyPWA|https://tiddly.packett.cool/]] is free software in both senses of the word; you can support its development by purchasing a supporter key or signing up for a monthly subscription [[on Patreon|https://www.patreon.com/valpackett]] (if you subscribe you can ask for a key using Patreon messages).
+[[TiddlyPWA|https://github.com/mblackman/tiddlypwa]] is free and open source software (0BSD). If you would like to support original creator [[Val Packett|https://val.packett.cool/]], you can do so [[on Patreon|https://www.patreon.com/valpackett]]. Supporter keys originally issued via Patreon continue to work.
 The key does not change the behavior of the software in any way, it only gives you a warm fuzzy feeling of being a supporter of independent free software development and shows a cute message below:
 
 <$tiddlypwa-supporter-key key={{$:/TiddlyPWASupporterKey}} />

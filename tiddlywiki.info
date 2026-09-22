@@ -13,7 +13,7 @@
             "--render", "$:/core/save/all", "index.html", "text/plain", "",
             "--render", "$:/bootstrap.json", "bootstrap.json", "text/plain", "", "bootState", "docs",
             "--render", "$:/core/save/all", "app/app.html", "text/plain", "", "publishFilter", "-[tag:[TiddlyPWA Docs]] -[[$:/DefaultTiddlers]]",
-            "--render", "$:/plugins/valpackett/tiddlypwa/sw.js", "app/sw.js", "text/plain",
+            "--render", "$:/plugins/mblackman/tiddlypwa/sw.js", "app/sw.js", "text/plain",
             "--render", "$:/bootstrap.json", "app/bootstrap.json", "text/plain", "", "bootState", "localonly"
         ]
     }

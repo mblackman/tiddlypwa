@@ -91,7 +91,7 @@ TiddlyPWA builds standalone HTML bundles via the TiddlyWiki CLI as configured in
 			"publishFilter",
 			"-[tag:[TiddlyPWA Docs]] -[[$:/DefaultTiddlers]]",
 			"--render",
-			"$:/plugins/valpackett/tiddlypwa/sw.js",
+			"$:/plugins/mblackman/tiddlypwa/sw.js",
 			"app/sw.js",
 			"text/plain",
 			"--render",

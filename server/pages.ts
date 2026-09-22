@@ -53,7 +53,7 @@ export const homePage = html`
 				<p>This is what should be pasted into the TiddlyPWA sync settings or the app uploader:<br><code id=endpoint></code></p>
 			</div>
 			<footer>
-				<a href=https://tiddly.packett.cool/>TiddlyPWA</a> sync server ✦ software by <a href=https://val.packett.cool/>Val Packett</a>
+				<a href=https://github.com/mblackman/tiddlypwa>TiddlyPWA</a> sync server ✦ maintained by <a href=https://github.com/mblackman>Matt Blackman</a> (originally by <a href=https://val.packett.cool/>Val Packett</a>)
 			</footer>
 			<script>
 				const knownErrors = {

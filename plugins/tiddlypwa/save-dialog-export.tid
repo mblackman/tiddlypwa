@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/save-dialog-export
+title: $:/plugins/mblackman/tiddlypwa/save-dialog-export
 tags: $:/tags/TiddlyPWA/SaveDialog
 caption: Export Single-File
 
@@ -6,7 +6,7 @@ caption: Export Single-File
 
 To make a single-file export/backup of the wiki, you can {{$:/core/ui/Buttons/encryption}} if you want and 
 <$button>
-<$action-sendmessage $message="tm-download-file" publishFilter="-[[$:/HistoryList]] -[[$:/StoryList]] -[[$:/isEncrypted]] -[[$:/UploadName]] -[prefix[$:/state/]] -[prefix[$:/status/]] -[prefix[$:/temp/]] -[prefix[$:/plugins/valpackett/tiddlypwa]]"/>
+<$action-sendmessage $message="tm-download-file" publishFilter="-[[$:/HistoryList]] -[[$:/StoryList]] -[[$:/isEncrypted]] -[[$:/UploadName]] -[prefix[$:/state/]] -[prefix[$:/status/]] -[prefix[$:/temp/]] -[prefix[$:/plugins/mblackman/tiddlypwa]]"/>
 save this wiki without TiddlyPWA
 </$button>.
 

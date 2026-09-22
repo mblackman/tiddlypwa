@@ -6,7 +6,7 @@ All you need is [[Deno|https://deno.com/]]. There are no moving parts like exter
 
 * get the Deno Runtime using [[the official builds|https://deno.com/manual/getting_started/installation]] or your OS's package manager
 * decide on an admin password and hash it using one of the following options (you'll get two environment variables):
-** on the console with `deno run https://codeberg.org/valpackett/tiddlypwa/raw/branch/release/server/hash-admin-password.ts`
+** on the console with `deno run https://raw.githubusercontent.com/mblackman/tiddlypwa/trunk/server/hash-admin-password.ts`
 ** [[right here in the browser|HashAdminPassword]]
 * decide on a location for the SQLite database file (set it using the `DB_PATH` environment variable and pass the containing directory as both `--allow-read` and `--allow-write` permissions)
 * run the script, assembling the variables and options together like the example below
@@ -18,7 +18,7 @@ ADMIN_PASSWORD_HASH=Zn…PQ \
 	deno run --unstable-broadcast-channel --allow-env \
 	--allow-read=/var/db/tiddly --allow-write=/var/db/tiddly \
 	--allow-net=:8000 \
-	https://codeberg.org/valpackett/tiddlypwa/raw/branch/release/server/run.ts
+	https://raw.githubusercontent.com/mblackman/tiddlypwa/trunk/server/run.ts
 ```
 
 You can customize the host and port to listen on with the `--host` and `--port` flags after the script path (be sure to adjust `--allow-net` accordingly),
@@ -42,7 +42,7 @@ If you're running Linux with systemd, see below for an example unit file.
 
 To refresh the cached version of the server scripts, you can use this command:
 
-`deno cache --reload https://codeberg.org/valpackett/tiddlypwa/raw/branch/release/server/run.ts`
+`deno cache --reload https://raw.githubusercontent.com/mblackman/tiddlypwa/trunk/server/run.ts`
 
 !! Security
 
@@ -67,7 +67,7 @@ deno compile -o tiddlypwa-sync-server \
 	--unstable-broadcast-channel --allow-env \
 	--allow-read=/var/db/tiddly --allow-write=/var/db/tiddly \
 	--allow-net=:8000 \
-	https://codeberg.org/valpackett/tiddlypwa/raw/branch/release/server/run.ts
+	https://raw.githubusercontent.com/mblackman/tiddlypwa/trunk/server/run.ts
 
 ADMIN_PASSWORD_HASH=Zn…PQ ADMIN_PASSWORD_SALT=q6…0o DB_PATH=/var/db/tiddly/pwa.db ./tiddlypwa-sync-server
 ```
@@ -77,7 +77,7 @@ ADMIN_PASSWORD_HASH=Zn…PQ ADMIN_PASSWORD_SALT=q6…0o DB_PATH=/var/db/tiddly/p
 ```
 [Unit]
 Description=TiddlyPWA sync server
-Documentation=https://tiddly.packett.cool/
+Documentation=https://github.com/mblackman/tiddlypwa
 Wants=network-online.target
 After=network-online.target
 
@@ -116,7 +116,7 @@ Environment=DENO_DIR=/var/cache/tiddlypwa/deno
 ExecStart=/usr/bin/deno --unstable-broadcast-channel --allow-env \
         --allow-read=/var/lib/tiddlypwa --allow-write=/var/lib/tiddlypwa \
         --allow-net=:7770 \
-        https://codeberg.org/valpackett/tiddlypwa/raw/branch/release/server/run.ts --port 7770
+        https://raw.githubusercontent.com/mblackman/tiddlypwa/trunk/server/run.ts --port 7770
 Restart=on-failure
 
 [Install]

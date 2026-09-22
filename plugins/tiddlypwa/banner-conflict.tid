@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/banner-conflict
+title: $:/plugins/mblackman/tiddlypwa/banner-conflict
 tags: $:/tags/PageTemplate
 
 <$list filter="[tag[$:/tags/TiddlyPWA/Conflict]limit[1]]" variable="hasConflicts">
@@ -7,8 +7,8 @@ tags: $:/tags/PageTemplate
   <div>
     <strong>⚠️ Sync conflict detected:</strong> one or more conflict copies were preserved.
     <$button to="$:/ControlPanel" class="tc-btn-small" style="margin-left: 10px; font-weight: bold;">
-      <$action-setfield $tiddler="$:/state/tab-1749438307" text="$:/plugins/valpackett/tiddlypwa/config"/>
-      <$action-setfield $tiddler="$:/state/tab--84302341" text="$:/plugins/valpackett/tiddlypwa/config-conflicts"/>
+      <$action-setfield $tiddler="$:/state/tab-1749438307" text="$:/plugins/mblackman/tiddlypwa/config"/>
+      <$action-setfield $tiddler="$:/state/tab--84302341" text="$:/plugins/mblackman/tiddlypwa/config-conflicts"/>
       Review Conflicts
     </$button>
   </div>

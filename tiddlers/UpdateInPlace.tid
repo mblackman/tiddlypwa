@@ -3,8 +3,8 @@ tags: [[TiddlyPWA Docs]]
 
 To update TiddlyPWA, you can drag and drop these plugin tiddlers into a running TiddlyPWA instance:
 
-{{$:/plugins/valpackett/tiddlypwa||$:/core/ui/Components/plugin-info}}
-{{$:/plugins/valpackett/web-app-manifest||$:/core/ui/Components/plugin-info}}
+{{$:/plugins/mblackman/tiddlypwa||$:/core/ui/Components/plugin-info}}
+{{$:/plugins/mblackman/web-app-manifest||$:/core/ui/Components/plugin-info}}
 
 Then confirm the import – and saving/uploading the app wiki will save it with updated TiddlyPWA. Basically, this is the same process as installing extra plugins.
 

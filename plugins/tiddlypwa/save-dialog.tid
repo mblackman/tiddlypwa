@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/save-dialog
+title: $:/plugins/mblackman/tiddlypwa/save-dialog
 subtitle: Saving and Exporting
 
 \define tv-wikilinks() no
@@ -12,7 +12,7 @@ subtitle: Saving and Exporting
 To finish the installation of plugins/themes/languages, you need to save and reload the app wiki.
 
 <$reveal type="lteq" state="$:/status/TiddlyPWAServerCount" text="0">
-You do not have sync servers configured, so you can only do this manually below in the "{{$:/plugins/valpackett/tiddlypwa/save-dialog-app!!caption}}" tab.
+You do not have sync servers configured, so you can only do this manually below in the "{{$:/plugins/mblackman/tiddlypwa/save-dialog-app!!caption}}" tab.
 </$reveal>
 <$reveal type="gt" state="$:/status/TiddlyPWAServerCount" text="0">
 <$reveal type="match" state="$:/isEncrypted" text="yes">
@@ -21,12 +21,12 @@ But first, disable single-file encryption: {{$:/core/ui/Buttons/encryption}}!
 <$reveal type="nomatch" state="$:/isEncrypted" text="yes">
 <$reveal type="nomatch" state="$:/status/TiddlyPWAUploading" text="yes">
 <$button>
-<$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/valpackett/tiddlypwa/app-filter}} />
+<$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/mblackman/tiddlypwa/app-filter}} />
 Upload it to sync servers
 </$button>!
 </$reveal>
 </$reveal>
-You can also use the "{{$:/plugins/valpackett/tiddlypwa/save-dialog-app!!caption}}" tab below to upload the app with these modifications to any other server or save it locally.
+You can also use the "{{$:/plugins/mblackman/tiddlypwa/save-dialog-app!!caption}}" tab below to upload the app with these modifications to any other server or save it locally.
 <p>{{$:/status/TiddlyPWAUploadResult}}</p>
 </$reveal>
 </$reveal>
@@ -37,4 +37,4 @@ and manually manage the app files.
 </$reveal>
 
 <$macrocall $name="tabs" tabsList="[all[tiddlers+shadows]tag[$:/tags/TiddlyPWA/SaveDialog]!has[draft.of]]"
-default="$:/plugins/valpackett/tiddlypwa/save-dialog-app" explicitState="$:/state/tab--28743853"/>
+default="$:/plugins/mblackman/tiddlypwa/save-dialog-app" explicitState="$:/state/tab--28743853"/>

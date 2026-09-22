@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/web-app-manifest/macro.js
+title: $:/plugins/mblackman/web-app-manifest/macro.js
 type: application/javascript
 module-type: macro
 

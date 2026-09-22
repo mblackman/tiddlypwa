@@ -1,14 +1,14 @@
-title: $:/plugins/valpackett/tiddlypwa/config
+title: $:/plugins/mblackman/tiddlypwa/config
 tags: $:/tags/ControlPanel
 caption: Storage and Sync
 
 <$reveal type="match" state="$:/status/TiddlyPWADocsMode" text="yes">
-[[TiddlyPWA|$:/plugins/valpackett/tiddlypwa]] is running in documentation/installer mode.
+[[TiddlyPWA|$:/plugins/mblackman/tiddlypwa]] is running in documentation/installer mode.
 </$reveal>
 
 <$reveal type="nomatch" state="$:/status/TiddlyPWADocsMode" text="yes">
-These settings let you configure [[TiddlyPWA|$:/plugins/valpackett/tiddlypwa]].
+These settings let you configure [[TiddlyPWA|$:/plugins/mblackman/tiddlypwa]].
 
 <$macrocall $name="tabs" tabsList="[all[tiddlers+shadows]tag[$:/tags/ControlPanel/TiddlyPWA]!has[draft.of]]"
-default="$:/plugins/valpackett/tiddlypwa/config-storage" explicitState="$:/state/tab--84302341"/>
+default="$:/plugins/mblackman/tiddlypwa/config-storage" explicitState="$:/state/tab--84302341"/>
 </$reveal>

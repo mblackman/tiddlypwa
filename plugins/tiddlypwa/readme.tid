@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/readme
+title: $:/plugins/mblackman/tiddlypwa/readme
 
 \define tv-wikilinks() no
 
@@ -6,13 +6,12 @@ TiddlyPWA is a storage and synchronization solution that turns TiddlyWiki into a
 Progressive Web App that works offline with local encrypted storage for all your tiddlers,
 and synchronizes your wiki across devices in real time using a tiny server app you can easily self-host for free.
 
-Read more about TiddlyPWA on <a class="tc-tiddlylink-external" href={{$:/plugins/valpackett/tiddlypwa!!demo}}>the documentation website</a>!
+Read more about TiddlyPWA on <a class="tc-tiddlylink-external" href={{$:/plugins/mblackman/tiddlypwa!!source}}>the project GitHub repository</a>!
 
-TiddlyPWA was created by [[Val Packett|https://val.packett.cool/]] ←
-please do [[throw some monies her way|https://www.patreon.com/valpackett]] :3
+TiddlyPWA is maintained by [[Matt Blackman|https://github.com/mblackman]], forked from the original project created by [[Val Packett|https://val.packett.cool/]]. If you would like to support the original creator, please consider [[supporting Val on Patreon|https://www.patreon.com/valpackett]] :3
 
 <$button>
-<$action-setfield $tiddler="$:/state/tab-1749438307" text="$:/plugins/valpackett/tiddlypwa/config"/>
+<$action-setfield $tiddler="$:/state/tab-1749438307" text="$:/plugins/mblackman/tiddlypwa/config"/>
 <$action-navigate $to="$:/ControlPanel"/>
 Configure the plugin in the Control Panel
 </$button>

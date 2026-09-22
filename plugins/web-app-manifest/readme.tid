@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/web-app-manifest/readme
+title: $:/plugins/mblackman/web-app-manifest/readme
 
 !! Web App Manifest
 
@@ -12,10 +12,10 @@ You can also <$button message="tiddlypwa-get-manifest">download the current mani
 
 !!! Manifest Generation
 
-The `name` is taken from [[$:/plugins/valpackett/web-app-manifest/name]], which by default just includes the wiki's title.
+The `name` is taken from [[$:/plugins/mblackman/web-app-manifest/name]], which by default just includes the wiki's title.
 
-Colors are taken from [[$:/plugins/valpackett/web-app-manifest/background-color]] and
-[[$:/plugins/valpackett/web-app-manifest/theme-color]], which by default take the current palette's colors.
+Colors are taken from [[$:/plugins/mblackman/web-app-manifest/background-color]] and
+[[$:/plugins/mblackman/web-app-manifest/theme-color]], which by default take the current palette's colors.
 
 Icons are collected from tiddlers tagged with `$:/tags/ManifestIcon`, but if none have that tag, [[$:/favicon.ico]] is chosen if it exists.
 (Obviously you can add the tag to [[$:/favicon.ico]] if you want to use it //and// others.)

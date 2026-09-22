@@ -110,7 +110,7 @@ If multiple conflicts arise for the same title within the same second, an increm
 
 Upon completing a sync that produced conflict copies, the client displays an alert toast:
 
-- Tiddler: `$:/plugins/valpackett/tiddlypwa/notif-conflict`
+- Tiddler: `$:/plugins/mblackman/tiddlypwa/banner-conflict`
 - Status Counter: Updates `$:/status/TiddlyPWAConflictsCount`
 
 ### 2. Persistent Warning Banner

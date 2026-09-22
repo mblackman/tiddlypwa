@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/upload-app-form
+title: $:/plugins/mblackman/tiddlypwa/upload-app-form
 
 \procedure input(tiddler,id,tag:input,default)
 <$tiddler tiddler=<<tiddler>> >
@@ -15,6 +15,6 @@ title: $:/plugins/valpackett/tiddlypwa/upload-app-form
 |tc-table-no-border tc-max-width tc-first-col-min-width|k
 | URL|<<input  id:"tpwa-endpoint-url" tiddler:"$:/temp/TiddlyPWAServerURL" default:"https://" >> |
 | Token|<<input tiddler:"$:/temp/TiddlyPWAServerToken">> |
-| |<$button><$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/valpackett/tiddlypwa/app-filter}} uploadUrl={{$:/temp/TiddlyPWAServerURL}} uploadToken={{$:/temp/TiddlyPWAServerToken}} />Upload</$button> |
+| |<$button><$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/mblackman/tiddlypwa/app-filter}} uploadUrl={{$:/temp/TiddlyPWAServerURL}} uploadToken={{$:/temp/TiddlyPWAServerToken}} />Upload</$button> |
 
 </div>

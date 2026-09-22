@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/web-app-manifest/link-tag
+title: $:/plugins/mblackman/web-app-manifest/link-tag
 tags: $:/tags/RawMarkupWikified/TopHead
 
 `<link rel="manifest" href="data:application/manifest+json;charset=utf-8,`<<tiddlypwa-manifest-data-uri>>`"/>`

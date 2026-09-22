@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/tiddlypwa/sw.js
+title: $:/plugins/mblackman/tiddlypwa/sw.js
 type: application/javascript
 
 Licensed under 0BSD, see license.tid.

@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/sync-dialog
+title: $:/plugins/mblackman/tiddlypwa/sync-dialog
 subtitle: Sync Status
 
 \define tv-wikilinks() no
@@ -10,7 +10,7 @@ subtitle: Sync Status
 
 TiddlyPWA automatically synchronizes changes to your content tiddlers with sync servers!
 
-{{$:/plugins/valpackett/tiddlypwa/sync-status}}
+{{$:/plugins/mblackman/tiddlypwa/sync-status}}
 
 <table class="tc-table-no-border tc-max-width">
 <thead>

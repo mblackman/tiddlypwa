@@ -39,7 +39,7 @@ Formatted with `deno fmt`.
 				node.target = '_blank';
 			}
 			if (!worker) {
-				const AW = require('$:/plugins/valpackett/tiddlypwa/argon2ian.js').ArgonWorker;
+				const AW = require('$:/plugins/mblackman/tiddlypwa/argon2ian.js').ArgonWorker;
 				worker = new AW();
 			}
 			const password = this.getAttribute('password', '');

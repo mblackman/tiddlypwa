@@ -1,5 +1,5 @@
 /*\
-title: $:/plugins/valpackett/tiddlypwa/argon2ian.js
+title: $:/plugins/mblackman/tiddlypwa/argon2ian.js
 type: application/javascript
 module-type: library
 

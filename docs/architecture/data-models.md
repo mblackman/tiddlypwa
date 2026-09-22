@@ -172,7 +172,7 @@ TiddlyPWA exposes its internal state to the TiddlyWiki reactive macro/widget eng
 
 ### 4.3 Control Panel Tabs (`$:/tags/ControlPanel/TiddlyPWA`)
 
-The TiddlyPWA settings panel (`$:/plugins/valpackett/tiddlypwa/config`) renders child tabs:
+The TiddlyPWA settings panel (`$:/plugins/mblackman/tiddlypwa/config`) renders child tabs:
 
 - **`config-storage.tid`**: Storage persistence, quota inspection, and database deletion.
 - **`config-sync.tid`**: Remote server URL and token management with connection testing.

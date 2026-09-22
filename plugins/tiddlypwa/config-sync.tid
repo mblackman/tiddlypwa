@@ -1,4 +1,4 @@
-title: $:/plugins/valpackett/tiddlypwa/config-sync
+title: $:/plugins/mblackman/tiddlypwa/config-sync
 tags: $:/tags/ControlPanel/TiddlyPWA
 caption: Synchronization
 
@@ -9,7 +9,7 @@ caption: Synchronization
 </$reveal>
 <$reveal type="gt" state="$:/status/TiddlyPWAServerCount" text="0">
 
-{{$:/plugins/valpackett/tiddlypwa/sync-status}}
+{{$:/plugins/mblackman/tiddlypwa/sync-status}}
 
 This device/browser syncs wiki contents with the following servers:
 

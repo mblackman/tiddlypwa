@@ -1,13 +1,13 @@
-title: $:/plugins/valpackett/tiddlypwa/sync-page-control
+title: $:/plugins/mblackman/tiddlypwa/sync-page-control
 tags: $:/tags/PageControls
-caption: {{$:/plugins/valpackett/tiddlypwa/sync-button-dynamic}} sync status
+caption: {{$:/plugins/mblackman/tiddlypwa/sync-button-dynamic}} sync status
 description: Check sync status
 
 \whitespace trim
 <$button tooltip="Check sync status" aria-label="Sync Status" class=<<tv-config-toolbar-class>>>
 <$action-sendmessage $message="tiddlypwa-open-save-dialog"/>
 <$list filter="[<tv-config-toolbar-icons>match[yes]]">
-{{$:/plugins/valpackett/tiddlypwa/sync-button-dynamic}}
+{{$:/plugins/mblackman/tiddlypwa/sync-button-dynamic}}
 </$list>
 <$list filter="[<tv-config-toolbar-text>match[yes]]">
 <span class="tc-btn-text">
