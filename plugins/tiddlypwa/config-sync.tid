@@ -41,6 +41,12 @@ This device/browser syncs wiki contents with the following servers:
 </$list>
 </table>
 
+<p style="margin-top: 1em;">
+	<$button set="$:/state/tab--84302341" setTo="$:/plugins/mblackman/tiddlypwa/config-pair" class="tc-btn-primary">
+		📱 Pair New Mobile Device (QR Code)
+	</$button>
+</p>
+
 </$reveal>
 
 |tc-table-no-border tc-max-width tc-first-col-min-width|k

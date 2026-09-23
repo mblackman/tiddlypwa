@@ -66,6 +66,73 @@ Formatted with `deno fmt`.
 		submit = dm('button', { attributes: { type: 'submit' }, text: 'Log in' });
 		feedback = dm('div', {});
 
+		biometricBox = null;
+		showBiometricPrompt(onBiometricClick, onPasswordFallbackClick) {
+			this.showModal();
+			if (this.biometricBox) return;
+			this.biometricBox = dm('div', { class: 'tiddlypwa-biometric-box' });
+			this.biometricBox.innerHTML = `
+				<div style="text-align: center; margin: 1em 0;">
+					<div style="font-size: 2.5em; margin-bottom: 0.25em;">🔐</div>
+					<p style="margin: 0.5em 0;"><strong>Unlock your wiki with biometrics</strong></p>
+					<p style="font-size: 0.85em; opacity: 0.8;">Touch ID, Face ID, or Windows Hello</p>
+				</div>
+			`;
+			const bioBtn = dm('button', {
+				class: 'tc-btn-big tc-btn-primary',
+				style: { width: '100%', padding: '0.6em', 'margin-bottom': '0.75em' },
+				attributes: { type: 'button' },
+				text: 'Unlock with Biometrics',
+				eventListeners: [{ name: 'click', handlerFunction: onBiometricClick }],
+			});
+			const passBtn = dm('button', {
+				class: 'tc-btn-invisible',
+				style: {
+					width: '100%',
+					'text-align': 'center',
+					'text-decoration': 'underline',
+					cursor: 'pointer',
+					border: 'none',
+					background: 'none',
+				},
+				attributes: { type: 'button' },
+				text: 'Enter Master Password instead',
+				eventListeners: [{
+					name: 'click',
+					handlerFunction: () => {
+						this.clearBiometricPrompt();
+						if (onPasswordFallbackClick) onPasswordFallbackClick();
+					},
+				}],
+			});
+			this.biometricBox.appendChild(bioBtn);
+			this.biometricBox.appendChild(passBtn);
+			this.modalBody.insertBefore(this.biometricBox, this.modalBody.firstChild);
+		}
+
+		clearBiometricPrompt() {
+			if (this.biometricBox && this.biometricBox.parentNode) {
+				this.biometricBox.parentNode.removeChild(this.biometricBox);
+				this.biometricBox = null;
+			}
+		}
+
+		setPairedNotice(message) {
+			const notice = dm('div', {
+				class: 'tiddlypwa-paired-notice',
+				style: {
+					background: '#e8f4fd',
+					border: '1px solid #b6d4fe',
+					padding: '8px 12px',
+					'border-radius': '4px',
+					'margin-bottom': '12px',
+					color: '#084298',
+				},
+				innerHTML: message,
+			});
+			this.modalBody.insertBefore(notice, this.modalBody.firstChild);
+		}
+
 		setFeedback(html) {
 			this.feedback.innerHTML = html;
 		}
@@ -108,14 +175,19 @@ Formatted with `deno fmt`.
 			});
 		}
 
-		addTokenInput(handlerFunction, initialValue) {
-			const tokLbl = dm('label', { text: 'Sync token' });
+		addTokenInput(handlerFunction, initialValue, isPaired = false) {
+			const tokLbl = dm('label', { text: isPaired ? 'Sync token (configured from pairing link)' : 'Sync token' });
 			const input = dm('input', {
 				attributes: { type: 'text', name: 'username', autocomplete: 'username' },
 				eventListeners: [{ name: 'change', handlerFunction }, { name: 'input', handlerFunction }],
 			});
 			if (initialValue) {
 				input.value = initialValue;
+			}
+			if (isPaired) {
+				input.readOnly = true;
+				input.style.backgroundColor = '#f8f9fa';
+				input.style.opacity = '0.85';
 			}
 			tokLbl.appendChild(input);
 			this.form.appendChild(tokLbl);

@@ -197,7 +197,17 @@ Formatted with `deno fmt`.
 			this.sessionChannel = new BroadcastChannel(`tiddlypwa-session:${location.pathname}`);
 			this.sessionChannel.onmessage = (evt) => {
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: evt.data ? 'yes' : 'no' });
+				if (!evt.data) {
+					this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'no' });
+					this.biometricSession = null;
+				}
 			};
+
+			this.wiki.addEventListener('change', (changes) => {
+				if (changes['$:/temp/TiddlyPWAPairIncludeKey']) {
+					this.updatePairUrl();
+				}
+			});
 
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOrigin', text: location.origin });
 
@@ -210,8 +220,8 @@ Formatted with `deno fmt`.
 				'online',
 				(_evt) => {
 					this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOnline', text: 'yes' });
-					if (this.db) {
-						this.backgroundSync();
+					if (!this.startedMonitor) {
+						this.monitorTimeout = 1000;
 						this.startRealtimeMonitor();
 					}
 				},
@@ -233,6 +243,8 @@ Formatted with `deno fmt`.
 						_evt,
 					) => {
 						this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: 'yes' });
+						this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'no' });
+						this.biometricSession = null;
 						$tw.notifier.display('$:/plugins/mblackman/tiddlypwa/notif-remembered');
 						this.sessionChannel.postMessage(true);
 					};
@@ -247,7 +259,109 @@ Formatted with `deno fmt`.
 					}
 				};
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: 'no' });
+				this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'no' });
+				this.biometricSession = null;
 				this.sessionChannel.postMessage(false);
+			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-enable-biometrics', async (_evt) => {
+				if (!this.basebits) {
+					alert('Please log in with your master password first before enabling biometrics.');
+					return;
+				}
+				if (!window.PublicKeyCredential || !window.isSecureContext) {
+					alert('WebAuthn biometrics is not supported in this browser or context (HTTPS is required).');
+					return;
+				}
+				try {
+					const prfSalt = crypto.getRandomValues(new Uint8Array(32));
+					const credential = await navigator.credentials.create({
+						publicKey: {
+							challenge: crypto.getRandomValues(new Uint8Array(32)),
+							rp: { name: 'TiddlyPWA', id: window.location.hostname },
+							user: {
+								id: crypto.getRandomValues(new Uint8Array(16)),
+								name: 'tiddlypwa-user',
+								displayName: 'TiddlyPWA User',
+							},
+							pubKeyCredParams: [
+								{ alg: -7, type: 'public-key' },
+								{ alg: -257, type: 'public-key' },
+							],
+							authenticatorSelection: {
+								authenticatorAttachment: 'platform',
+								userVerification: 'required',
+								residentKey: 'preferred',
+							},
+							extensions: {
+								prf: {
+									eval: {
+										first: prfSalt,
+									},
+								},
+							},
+						},
+					});
+					const extResults = credential?.getClientExtensionResults ? credential.getClientExtensionResults() : null;
+					const prfOutput = extResults?.prf?.results?.first;
+					if (!prfOutput) {
+						alert('Your device or authenticator does not support the WebAuthn PRF extension for hardware encryption.');
+						return;
+					}
+					const prfBaseKey = await crypto.subtle.importKey('raw', prfOutput, 'HKDF', false, ['deriveKey']);
+					const wrappingKey = await crypto.subtle.deriveKey(
+						{
+							name: 'HKDF',
+							hash: 'SHA-256',
+							salt: prfSalt,
+							info: utfenc.encode('tiddlypwa.biometric.kek'),
+						},
+						prfBaseKey,
+						{ name: 'AES-GCM', length: 256 },
+						false,
+						['encrypt'],
+					);
+					const iv = crypto.getRandomValues(new Uint8Array(12));
+					const ciphertextBuffer = await crypto.subtle.encrypt(
+						{ name: 'AES-GCM', iv },
+						wrappingKey,
+						this.basebits,
+					);
+					const sessionRecord = {
+						mode: 'biometric_prf',
+						credId: credential.rawId,
+						prfSalt,
+						iv,
+						ciphertext: ciphertextBuffer,
+						createdAt: new Date(),
+					};
+					const sessionStore = this.db.transaction('session', 'readwrite').objectStore('session');
+					sessionStore.clear();
+					await adb(sessionStore.put(sessionRecord));
+					this.biometricSession = sessionRecord;
+					this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'yes' });
+					this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: 'no' });
+					this.sessionChannel.postMessage(true);
+					alert(
+						'Biometric Unlock is now enabled on this device! You can unlock using Touch ID, Face ID, or Windows Hello.',
+					);
+				} catch (e) {
+					console.error('Failed to enable biometrics:', e);
+					alert('Failed to enable biometrics: ' + (e.message || e));
+				}
+			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-disable-biometrics', async (_evt) => {
+				const sessionStore = this.db.transaction('session', 'readwrite').objectStore('session');
+				sessionStore.clear();
+				this.biometricSession = null;
+				this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'no' });
+				this.sessionChannel.postMessage(false);
+				alert('Biometric Unlock has been disabled.');
+			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-refresh-pair-url', async (_evt) => {
+				await this.updatePairUrl();
 			});
 
 			$tw.rootWidget.addEventListener('tiddlypwa-enable-persistence', (_evt) => {
@@ -626,10 +740,138 @@ Formatted with `deno fmt`.
 				.catch((e) => this.logger.alert('Failed to delete database!', e));
 		}
 
+		async deriveKeysFromBasebits(basebits) {
+			const basekey = await crypto.subtle.importKey('raw', basebits, 'HKDF', false, ['deriveKey']);
+			this.enckeys = await Promise.all(
+				[...Array(8).keys()].map((i) =>
+					crypto.subtle.deriveKey(
+						{
+							name: 'HKDF',
+							hash: 'SHA-256',
+							salt: utfenc.encode('tiddly.pwa.tiddlers.' + i),
+							info: new Uint8Array(),
+						},
+						basekey,
+						{ name: 'AES-GCM', length: 256 },
+						false,
+						['encrypt', 'decrypt'],
+					)
+				),
+			);
+			this.mackey = await crypto.subtle.deriveKey(
+				{ name: 'HKDF', hash: 'SHA-256', salt: utfenc.encode('tiddly.pwa.titles'), info: new Uint8Array() },
+				basekey,
+				{ name: 'HMAC', hash: 'SHA-256' },
+				false,
+				['sign'],
+			);
+		}
+
+		async unlockWithBiometrics(sessionRecord) {
+			const assertion = await navigator.credentials.get({
+				publicKey: {
+					challenge: crypto.getRandomValues(new Uint8Array(32)),
+					rpId: window.location.hostname,
+					allowCredentials: [{
+						id: sessionRecord.credId,
+						type: 'public-key',
+					}],
+					userVerification: 'required',
+					extensions: {
+						prf: {
+							eval: {
+								first: sessionRecord.prfSalt,
+							},
+						},
+					},
+				},
+			});
+			const extResults = assertion?.getClientExtensionResults ? assertion.getClientExtensionResults() : null;
+			const prfOutput = extResults?.prf?.results?.first;
+			if (!prfOutput) {
+				throw new Error('Authenticator did not return PRF key material');
+			}
+			const prfBaseKey = await crypto.subtle.importKey('raw', prfOutput, 'HKDF', false, ['deriveKey']);
+			const wrappingKey = await crypto.subtle.deriveKey(
+				{
+					name: 'HKDF',
+					hash: 'SHA-256',
+					salt: sessionRecord.prfSalt,
+					info: utfenc.encode('tiddlypwa.biometric.kek'),
+				},
+				prfBaseKey,
+				{ name: 'AES-GCM', length: 256 },
+				false,
+				['decrypt'],
+			);
+			const decryptedBuffer = await crypto.subtle.decrypt(
+				{ name: 'AES-GCM', iv: sessionRecord.iv },
+				wrappingKey,
+				sessionRecord.ciphertext,
+			);
+			const basebits = new Uint8Array(decryptedBuffer);
+			this.basebits = basebits;
+			await this.deriveKeysFromBasebits(basebits);
+			const verified = await this.initialRead();
+			if (!verified) {
+				throw new Error('Biometric key verification failed');
+			}
+			return true;
+		}
+
+		async updatePairUrl() {
+			if (!this.db) return;
+			let servers = [];
+			try {
+				servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+			} catch (e) {
+				console.warn('Could not read syncservers for pairing url', e);
+			}
+			if (servers.length === 0) {
+				this.wiki.addTiddler({ title: '$:/temp/TiddlyPWAPairUrl', text: '' });
+				return;
+			}
+			const primaryServer = servers[0];
+			const appUrl = new URL(location.pathname, location.origin).href;
+			const includeKey = this.wiki.getTiddlerText('$:/temp/TiddlyPWAPairIncludeKey') === 'yes';
+			const params = new URLSearchParams();
+			params.set('token', primaryServer.token);
+			if (this.salt) {
+				params.set('salt', await b64enc(this.salt));
+			}
+			if (includeKey && this.basebits) {
+				params.set('key', await b64enc(this.basebits));
+			}
+			const pairUrl = appUrl + '#' + params.toString();
+			this.wiki.addTiddler({ title: '$:/temp/TiddlyPWAPairUrl', text: pairUrl });
+		}
+
 		async _getStatus() {
 			if (!this.browserToken) {
 				this.browserToken = await b64enc(crypto.getRandomValues(new Uint8Array(12)));
 			}
+			let pairToken = null;
+			let pairSalt = null;
+			let pairKey = null;
+			let isPaired = false;
+			if (location.hash.startsWith('#') && location.hash.length > 1) {
+				try {
+					const hashParams = new URLSearchParams(location.hash.slice(1));
+					if (hashParams.has('token')) pairToken = hashParams.get('token');
+					if (hashParams.has('salt')) pairSalt = hashParams.get('salt');
+					if (hashParams.has('key')) pairKey = hashParams.get('key');
+					if (pairToken || pairSalt || pairKey) {
+						isPaired = true;
+						history.replaceState(null, '', location.pathname + location.search);
+					}
+				} catch (e) {
+					console.error('Failed to parse URL hash pairing params', e);
+				}
+			}
+			this.wiki.addTiddler({
+				title: '$:/status/TiddlyPWABiometricAvailable',
+				text: (typeof window !== 'undefined' && window.PublicKeyCredential && window.isSecureContext) ? 'yes' : 'no',
+			});
 			if (!this.db) {
 				const req = indexedDB.open(`tiddlypwa:${location.pathname}`, 1);
 				req.onupgradeneeded = (evt) => {
@@ -655,10 +897,128 @@ Formatted with `deno fmt`.
 			if (this.db && !this.enckeys) {
 				const ses = await adb(this.db.transaction('session').objectStore('session').getAll());
 				if (ses.length > 0) {
-					this.enckeys = ses[ses.length - 1].enckeys;
-					this.mackey = ses[ses.length - 1].mackey;
+					const lastSession = ses[ses.length - 1];
+					if (lastSession.mode === 'biometric_prf') {
+						this.biometricSession = lastSession;
+						this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'yes' });
+					} else if (lastSession.enckeys && lastSession.mackey) {
+						this.enckeys = lastSession.enckeys;
+						this.mackey = lastSession.mackey;
+					}
 				}
-				this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: ses.length > 0 ? 'yes' : 'no' });
+				this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: this.enckeys ? 'yes' : 'no' });
+			}
+			if (pairKey && !this.enckeys) {
+				try {
+					const rawKey = b64dec(pairKey);
+					if (rawKey && rawKey.byteLength === 32) {
+						this.basebits = rawKey;
+						if (pairSalt) {
+							this.salt = b64dec(pairSalt);
+						}
+						await this.deriveKeysFromBasebits(this.basebits);
+						const ok = await this.initialRead();
+						if (ok) {
+							this.logger.log('Unlocked directly via instant-pairing key');
+							this.modal.close();
+							delete this.modal;
+							if (freshDb && this.salt) {
+								this.db.transaction('metadata', 'readwrite').objectStore('metadata').put({ salt: this.salt });
+							}
+							if (pairToken) {
+								const serverUrl = new URL('tid.dly', document.location).href;
+								await adb(
+									this.db.transaction('syncservers', 'readwrite').objectStore('syncservers').put({
+										url: serverUrl,
+										token: pairToken,
+										lastSync: new Date(0),
+									}),
+								);
+								this.backgroundSync();
+							}
+							await this.reflectSyncServers();
+							await this.reflectStorageInfo();
+							this.wiki.addTiddler({
+								title: '$:/status/TiddlyPWASalt',
+								text: await b64enc(this.salt),
+							});
+							this.wiki.addTiddler({
+								title: '$:/status/TiddlyPWABiometricAvailable',
+								text: (typeof window !== 'undefined' && window.PublicKeyCredential && window.isSecureContext)
+									? 'yes'
+									: 'no',
+							});
+							this.wiki.addTiddler({
+								title: '$:/status/TiddlyPWABiometricConfigured',
+								text: this.biometricSession ? 'yes' : 'no',
+							});
+							await this.updatePairUrl();
+							this.initServiceWorker();
+							if (freshDb && navigator.storage) navigator.storage.persist().then(() => this.reflectStorageInfo());
+							return;
+						} else {
+							this.enckeys = null;
+							this.mackey = null;
+							this.basebits = null;
+						}
+					}
+				} catch (e) {
+					console.error('Instant pairing key failed:', e);
+					this.enckeys = null;
+					this.mackey = null;
+					this.basebits = null;
+				}
+			}
+			if (this.biometricSession && !this.enckeys) {
+				let bioUnlocked = false;
+				await new Promise((resolve) => {
+					const doBiometric = async () => {
+						this.modal.setFeedback('<p>Authenticating with biometrics…</p>');
+						try {
+							await this.unlockWithBiometrics(this.biometricSession);
+							bioUnlocked = true;
+							this.modal.close();
+							delete this.modal;
+							resolve();
+						} catch (e) {
+							console.warn('Biometric unlock failed or cancelled:', e);
+							this.modal.setFeedback(
+								'<p class="tiddlypwa-form-error">Biometric unlock was cancelled. Please use password.</p>',
+							);
+							this.modal.clearBiometricPrompt();
+							this.modal.showForm();
+							resolve();
+						}
+					};
+					this.modal.showBiometricPrompt(
+						doBiometric,
+						() => {
+							this.modal.showForm();
+							resolve();
+						},
+					);
+				});
+				if (bioUnlocked) {
+					await this.reflectSyncServers();
+					await this.reflectStorageInfo();
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWASalt',
+						text: await b64enc(this.salt),
+					});
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWABiometricAvailable',
+						text: (typeof window !== 'undefined' && window.PublicKeyCredential && window.isSecureContext)
+							? 'yes'
+							: 'no',
+					});
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWABiometricConfigured',
+						text: 'yes',
+					});
+					await this.updatePairUrl();
+					this.initServiceWorker();
+					return;
+				}
 			}
 			if (!this.enckeys) {
 				let bootstrapEndpoint;
@@ -740,19 +1100,39 @@ Formatted with `deno fmt`.
 								<p>Try to log in using your credentials below anyway?</p>
 							`);
 						}
+						if (isPaired) {
+							this.modal.setPairedNotice(
+								'📱 <strong>Device Paired</strong>: Sync server and token configured from pairing link. Enter your master password below.',
+							);
+						}
+						if (pairToken) {
+							if (!bootstrapEndpoint) bootstrapEndpoint = {};
+							bootstrapEndpoint.token = pairToken;
+						}
+						if (pairSalt) {
+							try {
+								this.salt = b64dec(pairSalt);
+								askSalt = false;
+							} catch (e) {
+								console.error('Failed to decode pairSalt', e);
+							}
+						}
 						if (askToken) {
 							if (!bootstrapEndpoint) {
 								alert(`This sync server is misconfigured: no endpoint found while state is '${state}'.`);
 							}
-							let initialToken = new URLSearchParams(location.search).get('token');
-							if (!initialToken && location.hash.startsWith('#token=')) {
-								initialToken = decodeURIComponent(location.hash.slice(7));
-								history.replaceState(null, '', location.pathname + location.search);
+							let initialToken = bootstrapEndpoint?.token;
+							if (!initialToken) {
+								initialToken = new URLSearchParams(location.search).get('token');
 							}
 							if (initialToken) {
 								bootstrapEndpoint.token = initialToken;
 							}
-							this.modal.addTokenInput((e) => bootstrapEndpoint.token = e.target.value.trim(), initialToken);
+							this.modal.addTokenInput(
+								(e) => bootstrapEndpoint.token = e.target.value.trim(),
+								initialToken,
+								isPaired && !!pairToken,
+							);
 						}
 						if (askSalt) {
 							this.modal.addSaltInput((e) => {
@@ -798,34 +1178,8 @@ Formatted with `deno fmt`.
 					console.time('hash');
 					const basebits = await argon.hash(utfenc.encode(password), this.salt, { m: 1 << 17, t: 2 });
 					console.timeEnd('hash');
-					const basekey = await crypto.subtle.importKey('raw', basebits, 'HKDF', false, ['deriveKey']);
-					// fun: https://soatok.blog/2021/11/17/understanding-hkdf/ (but we don't have any randomness to shove into info)
-					// not fun: https://soatok.blog/2020/12/24/cryptographic-wear-out-for-symmetric-encryption/
-					// realistically 4 billion encryptions is already actually *a lot* for a notes app even with really heavy use lol
-					// but by having just 8 keys we get to 34 billion which is Better
-					this.enckeys = await Promise.all(
-						[...Array(8).keys()].map((i) =>
-							crypto.subtle.deriveKey(
-								{
-									name: 'HKDF',
-									hash: 'SHA-256',
-									salt: utfenc.encode('tiddly.pwa.tiddlers.' + i),
-									info: new Uint8Array(),
-								},
-								basekey,
-								{ name: 'AES-GCM', length: 256 },
-								false,
-								['encrypt', 'decrypt'],
-							)
-						),
-					);
-					this.mackey = await crypto.subtle.deriveKey(
-						{ name: 'HKDF', hash: 'SHA-256', salt: utfenc.encode('tiddly.pwa.titles'), info: new Uint8Array() },
-						basekey,
-						{ name: 'HMAC', hash: 'SHA-256' },
-						false,
-						['sign'],
-					);
+					this.basebits = basebits;
+					await this.deriveKeysFromBasebits(this.basebits);
 					checked = await this.initialRead();
 					if (!checked) {
 						this.modal.setFeedback('<p class=tiddlypwa-form-error>Wrong password!</p>');
@@ -857,8 +1211,19 @@ Formatted with `deno fmt`.
 				title: '$:/status/TiddlyPWASalt',
 				text: await b64enc(this.salt),
 			});
-			this.modal.close();
-			delete this.modal;
+			this.wiki.addTiddler({
+				title: '$:/status/TiddlyPWABiometricAvailable',
+				text: (typeof window !== 'undefined' && window.PublicKeyCredential && window.isSecureContext) ? 'yes' : 'no',
+			});
+			this.wiki.addTiddler({
+				title: '$:/status/TiddlyPWABiometricConfigured',
+				text: this.biometricSession ? 'yes' : 'no',
+			});
+			await this.updatePairUrl();
+			if (this.modal) {
+				this.modal.close();
+				delete this.modal;
+			}
 			this.initServiceWorker(); // don't await
 			if (freshDb && navigator.storage) navigator.storage.persist().then(() => this.reflectStorageInfo());
 		}
