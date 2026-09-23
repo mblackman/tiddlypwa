@@ -1,0 +1,53 @@
+title: $:/plugins/mblackman/tiddlypwa/config-pair
+tags: $:/tags/ControlPanel/TiddlyPWA
+caption: Pair Device
+
+\define tv-wikilinks() no
+
+<$reveal type="lteq" state="$:/status/TiddlyPWAServerCount" text="0">
+<p>You do not have a sync server configured yet. Configure a sync server in the ''Synchronization'' tab first to pair secondary devices.</p>
+</$reveal>
+
+<$reveal type="gt" state="$:/status/TiddlyPWAServerCount" text="0">
+
+<h3>📱 Connect a Mobile Device or Browser</h3>
+
+<p>Scan this QR code with your phone or tablet camera to instantly connect this wiki. The sync server URL, token, and salt will be configured automatically without manual typing.</p>
+
+<div class="tiddlypwa-pair-container" style="max-width: 300px; margin: 1em auto; padding: 16px; background: #ffffff; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center;">
+	<$reveal type="nomatch" state="$:/temp/TiddlyPWAPairUrl" text="">
+		<$macrocall $name="tiddlypwa-qrcode" text={{$:/temp/TiddlyPWAPairUrl}} margin="2" ecLevel="L" />
+	</$reveal>
+	<$reveal type="match" state="$:/temp/TiddlyPWAPairUrl" text="">
+		<$button message="tiddlypwa-refresh-pair-url">Generate Pairing QR Code</$button>
+	</$reveal>
+</div>
+
+<div style="margin: 1em 0;">
+	<$checkbox tiddler="$:/temp/TiddlyPWAPairIncludeKey" field="text" checked="yes" unchecked="no" default="no">
+		''Include Instant-Unlock Key in QR Code'' (One-scan login without typing password)
+	</$checkbox>
+	<$reveal type="match" state="$:/temp/TiddlyPWAPairIncludeKey" text="yes">
+		<p style="color: #b02a37; font-size: 0.9em; margin-top: 0.25em;">
+			⚠️ <em>Anyone scanning this QR code from your screen will be able to unlock this wiki immediately. Keep your screen private while pairing.</em>
+		</p>
+	</$reveal>
+	<$reveal type="nomatch" state="$:/temp/TiddlyPWAPairIncludeKey" text="yes">
+		<p style="color: #495057; font-size: 0.9em; margin-top: 0.25em;">
+			<em>The QR code will configure the server token and salt. You will enter your master password once on the new device.</em>
+		</p>
+	</$reveal>
+</div>
+
+<p>
+	<$button message="tiddlypwa-refresh-pair-url">Refresh Pairing Code</$button>
+</p>
+
+<details style="margin-top: 1em;">
+	<summary>View or Copy Pairing Link</summary>
+	<p style="word-break: break-all; font-family: monospace; font-size: 0.85em; background: #f8f9fa; padding: 8px; border: 1px solid #eee; border-radius: 4px;">
+		{{$:/temp/TiddlyPWAPairUrl}}
+	</p>
+</details>
+
+</$reveal>

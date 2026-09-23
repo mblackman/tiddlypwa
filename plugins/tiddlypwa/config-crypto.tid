@@ -4,6 +4,38 @@ caption: Password Protection
 
 \define tv-wikilinks() no
 
+<h3>🔐 Biometric Unlock (Touch ID / Face ID)</h3>
+
+<$reveal type="match" state="$:/status/TiddlyPWABiometricAvailable" text="yes">
+
+<$reveal type="match" state="$:/status/TiddlyPWABiometricConfigured" text="yes">
+<p style="color: #0f5132; background: #d1e7dd; padding: 8px 12px; border-radius: 4px; border: 1px solid #badbcc;">
+	<strong>✅ Biometric Unlock is active on this device.</strong> You can unlock this wiki instantly with Touch ID, Face ID, or Windows Hello.
+</p>
+<p>
+	<$button message="tiddlypwa-disable-biometrics">Disable Biometric Unlock</$button>
+</p>
+</$reveal>
+
+<$reveal type="nomatch" state="$:/status/TiddlyPWABiometricConfigured" text="yes">
+<p>Unlock your wiki instantly without typing your master passphrase every time. Your master key is hardware-encrypted on this device using WebAuthn platform biometrics.</p>
+<p>
+	<$button message="tiddlypwa-enable-biometrics" class="tc-btn-big tc-btn-primary">Enable Touch ID / Face ID Unlock</$button>
+</p>
+</$reveal>
+
+</$reveal>
+
+<$reveal type="nomatch" state="$:/status/TiddlyPWABiometricAvailable" text="yes">
+<p style="color: #666; font-style: italic;">
+	Biometric platform authentication (WebAuthn) is not supported in this browser environment or requires HTTPS/localhost.
+</p>
+</$reveal>
+
+<hr style="margin: 1.5em 0; border: none; border-top: 1px solid #ddd;">
+
+<h3>Legacy Browser Key Storage</h3>
+
 The password (or technically, the encryption key derived from it) is currently
 <$reveal type="match" state="$:/status/TiddlyPWARemembered" text="yes">
 ''remembered'' on this device. <$button message="tiddlypwa-forget">Forget it</$button>?
@@ -12,10 +44,13 @@ The password (or technically, the encryption key derived from it) is currently
 ''not remembered'' on this device. <$button message="tiddlypwa-remember">Remember it</$button>?
 </$reveal>
 
-(Warning: remembering the password would leave the contents of this wiki unprotected on the local device,
-including from other wikis or other apps hosted on this 
-[[origin|https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy]] (<code>{{$:/status/TiddlyPWAOrigin}}</code>).
-Do not do this if you store secrets here!)
+<p style="font-size: 0.9em; color: #666;">
+(Warning: remembering the password stores unencrypted keys in browser storage, leaving the contents of this wiki unprotected against anyone with physical access to this browser profile or origin <code>{{$:/status/TiddlyPWAOrigin}}</code>. Biometric Unlock is recommended instead.)
+</p>
 
-The salt value for this wiki is: <code>{{$:/status/TiddlyPWASalt}}</code>
-(if you were to manually initialize a new one to sync with this one, you would need to copy this value).
+<hr style="margin: 1.5em 0; border: none; border-top: 1px solid #ddd;">
+
+<h3>Wiki Salt</h3>
+
+The salt value for this wiki is: <code>{{$:/status/TiddlyPWASalt}}</code><br>
+<span style="font-size: 0.85em; color: #666;">(Pre-configured automatically during QR device pairing, or used for manual cross-wiki synchronization setup).</span>

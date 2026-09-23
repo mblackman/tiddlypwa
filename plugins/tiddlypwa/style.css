@@ -30,6 +30,23 @@ Licensed under 0BSD, see license.tid.
 	color: #ee1111;
 	font-weight: bolder;
 }
+.tiddlypwa-paired-notice {
+	background: #e8f4fd;
+	border: 1px solid #b6d4fe;
+	padding: 8px 12px;
+	border-radius: 4px;
+	margin-bottom: 12px;
+	color: #084298;
+	font-size: 0.9em;
+}
+.tiddlypwa-biometric-box {
+	text-align: center;
+	margin: 1em 0;
+}
+.tiddlypwa-pair-container svg {
+	display: block;
+	margin: 0 auto;
+}
 .tiddlypwa-supporter {
 	font: 1.5em cursive;
 }
