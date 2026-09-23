@@ -1,0 +1,11 @@
+title: GettingStarted
+caption: Getting Started
+
+Welcome to your private, offline-first notebook!
+
+* ''End-to-End Encrypted'': Your notes are encrypted right inside your browser using Argon2id and AES-GCM before syncing.
+* ''Offline First'': All content is stored in your device's IndexedDB and works with or without an active internet connection.
+* ''Multi-Device Sync'': Open this wiki on any of your devices to keep your notes synchronized in real time.
+* ''App Installation'': On mobile or desktop browsers, use **Add to Home Screen** or **Install** to run this wiki as a standalone app.
+
+To start writing, click the {{$:/core/images/new-button}} button above or in the sidebar!

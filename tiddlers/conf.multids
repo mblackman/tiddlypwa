@@ -2,7 +2,7 @@ title: $:/
 
 SiteTitle: TiddlyPWA
 SiteSubtitle: ~TiddlyWiki Storage & Sync Solution
-DefaultTiddlers: TiddlyPWA
+DefaultTiddlers: [tag[TiddlyPWA Docs]then[TiddlyPWA]else[GettingStarted]]
 theme: $:/themes/nico/notebook
 palette: $:/themes/nico/notebook/palettes/palette-dark
 themes/nico/notebook/settings/fontfamily: system-ui,sans-serif

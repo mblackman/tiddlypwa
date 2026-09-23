@@ -108,12 +108,16 @@ Formatted with `deno fmt`.
 			});
 		}
 
-		addTokenInput(handlerFunction) {
+		addTokenInput(handlerFunction, initialValue) {
 			const tokLbl = dm('label', { text: 'Sync token' });
-			tokLbl.appendChild(dm('input', {
+			const input = dm('input', {
 				attributes: { type: 'text', name: 'username', autocomplete: 'username' },
-				eventListeners: [{ name: 'change', handlerFunction }],
-			}));
+				eventListeners: [{ name: 'change', handlerFunction }, { name: 'input', handlerFunction }],
+			});
+			if (initialValue) {
+				input.value = initialValue;
+			}
+			tokLbl.appendChild(input);
 			this.form.appendChild(tokLbl);
 		}
 

@@ -8,6 +8,7 @@
     "jsr:@std/internal@^1.0.12": "1.0.14",
     "npm:@types/serviceworker@*": "0.0.89",
     "npm:tiddlywiki@5.3.5": "5.3.5",
+    "npm:tiddlywiki@5.4.1": "5.4.1",
     "npm:tw5-typed@*": "0.5.11"
   },
   "jsr": {
@@ -66,6 +67,10 @@
     },
     "tiddlywiki@5.3.5": {
       "integrity": "sha512-8pTmnQdkcHbol9D86Op7OGK4sGDqm19HWT2qgpSxPHfDG0yJ2rSBUTRuOMuh9GoPP0Tcz9+1Pe8A1m6pvd/zYQ==",
+      "bin": true
+    },
+    "tiddlywiki@5.4.1": {
+      "integrity": "sha512-5Pnk7j8cUMoQHD0CarOWd4ixITURsN4DJxLfg8AGYSMiQoOHH6bp8JDCAgSdvZHRCQmvXtbm5FRxBFBT6WG24A==",
       "bin": true
     },
     "tw5-typed@0.5.11": {

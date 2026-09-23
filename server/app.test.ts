@@ -9,6 +9,7 @@ const app = new TiddlyPWASyncApp(
 	'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
 	'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
 );
+await app.loadDefaultApp();
 
 const api = (data: any) =>
 	app.handle(
@@ -22,6 +23,7 @@ const _page = (path: string) => app.handle(new Request('http://example.com/' + p
 
 const createWiki = () => api({ op: 'create', atoken: 'test' }).then((x) => x.token as string);
 const deleteWiki = (token: string) => api({ op: 'delete', atoken: 'test', token });
+const resetApp = (token: string) => api({ op: 'resetapp', atoken: 'test', token });
 const _uploadAppFile = (token: string, body: string, extra?: Record<string, unknown>, file = 'app.html') =>
 	api({
 		op: 'uploadapp',
@@ -489,6 +491,66 @@ Deno.test('wiki asset serving: Brotli encoding and fallback decompression', asyn
 	assertEquals(noBrResp.headers.get('content-encoding'), null);
 	const rawText = await noBrResp.text();
 	assertEquals(rawText, testHtml);
+
+	await deleteWiki(tok);
+});
+
+Deno.test('wiki asset serving: unseeded wiki falls back to bundled default app', async () => {
+	const tok = await createWiki();
+	const prefix = tok.slice(0, tok.length / 2);
+
+	// 1. Request app.html with br
+	const brReq = new Request(`http://example.com/${prefix}/app.html`, {
+		headers: { 'Accept-Encoding': 'gzip, deflate, br' },
+	});
+	const brResp = await app.handle(brReq);
+	assertEquals(brResp.status, 200);
+	assertEquals(brResp.headers.get('content-encoding'), 'br');
+	const brBytes = new Uint8Array(await brResp.arrayBuffer());
+	const decompressed = brotli.decompress(brBytes);
+	const text = new TextDecoder().decode(decompressed);
+	assertEquals(text.includes('$:/plugins/mblackman/tiddlypwa'), true);
+
+	// 2. Request sw.js
+	const swReq = new Request(`http://example.com/${prefix}/sw.js`);
+	const swResp = await app.handle(swReq);
+	assertEquals(swResp.status, 200);
+	const swText = await swResp.text();
+	assertEquals(swText.includes('$:/plugins/mblackman/tiddlypwa/sw.js'), true);
+
+	// 3. ETag 304 caching
+	const etag = brResp.headers.get('etag');
+	const cacheReq = new Request(`http://example.com/${prefix}/app.html`, {
+		headers: { 'Accept-Encoding': 'gzip, deflate, br', 'If-None-Match': etag! },
+	});
+	const cacheResp = await app.handle(cacheReq);
+	assertEquals(cacheResp.status, 304);
+
+	await deleteWiki(tok);
+});
+
+Deno.test('wiki asset serving: resetapp reverts custom app back to bundled default', async () => {
+	const tok = await createWiki();
+	const prefix = tok.slice(0, tok.length / 2);
+	const customHtml = '<!doctype html><html><body><h1>Custom Plugin Theme</h1></body></html>';
+
+	// 1. Upload custom app
+	await _uploadAppFile(tok, customHtml, {}, 'app.html');
+	const customReq = new Request(`http://example.com/${prefix}/app.html`);
+	const customResp = await app.handle(customReq);
+	assertEquals(customResp.status, 200);
+	assertEquals(await customResp.text(), customHtml);
+
+	// 2. Reset app
+	const resetRes = await resetApp(tok);
+	assertEquals(resetRes, {});
+
+	// 3. Verify it now serves the bundled default again
+	const defaultReq = new Request(`http://example.com/${prefix}/app.html`);
+	const defaultResp = await app.handle(defaultReq);
+	assertEquals(defaultResp.status, 200);
+	const defaultText = await defaultResp.text();
+	assertEquals(defaultText.includes('$:/plugins/mblackman/tiddlypwa'), true);
 
 	await deleteWiki(tok);
 });

@@ -91,6 +91,10 @@ CREATE TRIGGER files_cleanup AFTER DELETE ON wikifiles BEGIN
       AND (SELECT COUNT(*) FROM wikifiles WHERE etag = OLD.etag) = 0;
 END;
 
+> [!TIP]
+> **Default App Fallback & Reset**:
+> If a tenant slot in `wikis` has no custom entries in `wikifiles`, `GET /:halftoken/app.html` and `GET /:halftoken/sw.js` transparently fall back to pre-compressed default assets bundled in `server/default_app/`. Calling `op: 'resetapp'` dissociates any custom files (`DELETE FROM wikifiles WHERE token = :token`), which fires `files_cleanup` and immediately restores fallback to server defaults.
+
 -- 5. Encrypted Tiddler Revisions Table
 CREATE TABLE tiddlers (
     token TEXT NOT NULL,

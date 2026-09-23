@@ -8,12 +8,10 @@ There, you can create "wikis", i.e. storage slots that can store synchronized ti
 
 Hosting the app wiki on the sync server is not obligatory, but ''highly recommended'' because it simplifies setup on multiple devices and allows easy plugin/theme installation.
 
-Once you have created a storage slot, you get a token that you can use for syncing the tiddlers and uploading the app wiki.
+Once you have created a storage slot, you get a token that you can use for syncing tiddlers, and the wiki is ''immediately accessible'' using the default app link in the admin table!
 
-* if you've ''just created the slot'', you can use [[UploadApp]] from here to upload a fresh app wiki;
-* if you've ''already'' synced with it from a local-only wiki (e.g. opened from [[here|TiddlyPWA]] using the "Try It Now" form), click the {{$:/core/images/save-button}} save button inside it, select the "{{$:/plugins/mblackman/tiddlypwa/save-dialog-app!!caption}}" tab and click "upload the app wiki to sync servers".
-
-Upon uploading the app wiki, you'll see the URL for the hosted app wiki. Now you should bookmark that URL and use it to access the wiki.
-It will also be accessible from the admin panel, by clicking the app wiki size.
+* if you want to use the default app build, simply click the link in the admin table to open and set up your wiki;
+* if you want to upload a custom app wiki build or restore an existing one, you can use [[UploadApp]];
+* if you customize the wiki later (by installing plugins or themes), click the {{$:/core/images/save-button}} save button inside it, select the "{{$:/plugins/mblackman/tiddlypwa/save-dialog-app!!caption}}" tab, and click "upload the app wiki to sync servers". You can also reset back to the default build at any time using the "Reset App" button in the admin console.
 
 Enjoy!

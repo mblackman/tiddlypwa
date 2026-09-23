@@ -284,7 +284,6 @@ export class TiddlyPWASyncApp {
 		this.db.dissociateAllFiles();
 		return Response.json({}, { headers: respHdrs, status: 200 });
 	}
-
 	@getWiki('EAUTH')
 	async handleUploadApp(
 		{ wiki, token, authcode, browserToken, files }: {
@@ -398,35 +397,19 @@ export class TiddlyPWASyncApp {
 				salt: wiki.salt,
 			}, { headers: respHdrs });
 		}
-		const file = this.db.getWikiFile(halftoken, filename);
+		let file = this.db.getWikiFile(halftoken, filename);
 		if (!file) {
-			// Fallback to bundled default app files
 			const defaultFile = this.defaultAppFiles.get(filename);
-			if (!defaultFile) {
+			if (defaultFile) {
+				file = {
+					etag: decodeBase64Url(defaultFile.etag),
+					rawsize: defaultFile.rawsize,
+					ctype: defaultFile.ctype,
+					body: defaultFile.body,
+				};
+			} else {
 				return Response.json({ error: 'EEXIST' }, { headers: respHdrs, status: 404 });
 			}
-			const supportsBrotli = supportsEncoding(req.headers, 'br');
-			const etagstr = '"' + defaultFile.etag + (supportsBrotli ? '-b' : '-x') + '"';
-			const headers = new Headers({
-				...respHdrs,
-				'content-type': defaultFile.ctype,
-				'vary': 'Accept-Encoding',
-				'cache-control': 'no-cache',
-				'etag': etagstr,
-			});
-			if (stripWeak(req.headers.get('if-none-match')) === etagstr) {
-				return new Response(null, { status: 304, headers });
-			}
-			let body: Uint8Array | null = null;
-			if (supportsBrotli) {
-				headers.set('content-encoding', 'br');
-				headers.set('content-length', defaultFile.body.length.toString());
-				if (req.method !== 'HEAD') body = defaultFile.body;
-			} else {
-				headers.set('content-length', defaultFile.rawsize.toString());
-				if (req.method !== 'HEAD') body = brotli.decompress(defaultFile.body);
-			}
-			return new Response(body as unknown as BodyInit, { headers });
 		}
 		const [supportsBrotli, etagstr] = processEtag(file.etag, req.headers);
 		// if we decompress and Deno recompresses to something else (gzip) it'll mark the ETag as a weak validator

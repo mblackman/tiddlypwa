@@ -10,7 +10,7 @@
 2. **Zero-Knowledge Security**: The server is treated as an untrusted carrier. It stores only ciphertexts, Initialization Vectors (IVs), cryptographic salts, keyed HMAC digests, and monotonic timestamps. It has no mechanism to decrypt wiki contents.
 3. **Dual Storage Model**:
    - **Wiki Content (Tiddlers)**: Stored individually in encrypted form in client IndexedDB and synchronized with server SQLite.
-   - **Wiki Engine & Core Extensions (App HTML)**: Standalone compiled HTML file containing the TiddlyWiki boot kernel, themes, and plugins. It is cached by a Service Worker and can be updated in-place via an authenticated server upload.
+   - **Wiki Engine & Core Extensions (App HTML)**: Standalone compiled HTML file containing the TiddlyWiki boot kernel, themes, and plugins. New wikis automatically fall back to the server's pre-compressed default build (`server/default_app/`), requiring zero manual seeding. Users can customize their app and upload overrides, or revert back to default at any time.
 4. **Multi-Tenancy & Lightweight Footprint**: A single backend server instance written in Deno and backed by an embedded SQLite database can securely host hundreds of independent wikis with strict data isolation.
 
 ---

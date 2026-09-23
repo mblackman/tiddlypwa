@@ -97,6 +97,14 @@ export const homePage = html`
 						tr.appendChild(noteTd);
 						const tokenTd = document.createElement('td');
 						tokenTd.innerText = token;
+						tokenTd.style.cursor = 'pointer';
+						tokenTd.title = 'Click to copy token';
+						tokenTd.onclick = () => {
+							navigator.clipboard.writeText(token);
+							const orig = tokenTd.innerText;
+							tokenTd.innerText = 'Copied!';
+							setTimeout(() => tokenTd.innerText = orig, 1200);
+						};
 						tr.appendChild(tokenTd);
 						const saltTd = document.createElement('td');
 						saltTd.innerText = salt ?? '-';
@@ -106,7 +114,7 @@ export const homePage = html`
 						tr.appendChild(tidsizeTd);
 						const appsizeTd = document.createElement('td');
 						const appsizeA = document.createElement('a');
-						appsizeA.href = new URL(token.slice(0, token.length / 2) + '/app.html', document.location).toString();
+						appsizeA.href = new URL(token.slice(0, token.length / 2) + '/app.html#token=' + token, document.location).toString();
 						if (appsize > 0) {
 							appsizeA.innerText = formatBytes(appsize) + ' (custom)';
 						} else {

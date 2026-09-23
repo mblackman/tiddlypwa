@@ -744,7 +744,15 @@ Formatted with `deno fmt`.
 							if (!bootstrapEndpoint) {
 								alert(`This sync server is misconfigured: no endpoint found while state is '${state}'.`);
 							}
-							this.modal.addTokenInput((e) => bootstrapEndpoint.token = e.target.value.trim());
+							let initialToken = new URLSearchParams(location.search).get('token');
+							if (!initialToken && location.hash.startsWith('#token=')) {
+								initialToken = decodeURIComponent(location.hash.slice(7));
+								history.replaceState(null, '', location.pathname + location.search);
+							}
+							if (initialToken) {
+								bootstrapEndpoint.token = initialToken;
+							}
+							this.modal.addTokenInput((e) => bootstrapEndpoint.token = e.target.value.trim(), initialToken);
 						}
 						if (askSalt) {
 							this.modal.addSaltInput((e) => {
