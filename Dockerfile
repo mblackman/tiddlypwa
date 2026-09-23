@@ -4,6 +4,7 @@ FROM denoland/deno:2.9.7 AS builder
 WORKDIR /build
 COPY deno.json deno.lock ./
 COPY plugins/ ./plugins/
+COPY themes/ ./themes/
 COPY tiddlers/ ./tiddlers/
 COPY tiddlywiki.info ./
 COPY server/ ./server/
