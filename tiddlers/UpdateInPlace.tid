@@ -16,9 +16,9 @@ Just like with TiddlyPWA, you can drag & drop the TiddlyWiki core itself as a pl
 
 However, you also need to make sure to update the bootstrap code tiddlers that aren't included in the plugin (just drag these links themselves):
 
-<<list-links "[prefix[$:/boot/]]">>
+<<list-links "[prefix[$:/boot/]] [prefix[$:/library/]]">>
 
-…as sometimes they get changed in a TiddlyWiki update, and core code expects matching bootstrap code. For example, this has happened in version 5.3.4.
+…as sometimes they get changed in a TiddlyWiki update, and core code expects matching bootstrap code. For example, version 5.4.x introduced [[$:/library/sjcl.js]].
 
 Whenever a new TiddlyWiki release happens, you can drag these in from https://tiddlywiki.com itself instead of waiting for the TiddlyPWA docs to update core. You can find the plugin in the control panel and the bootstrap tiddlers in the sidebar (More → System).
 

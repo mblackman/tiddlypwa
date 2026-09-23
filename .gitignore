@@ -1,3 +1,4 @@
 .data/
 output/
+server/default_app/
 .netlify/

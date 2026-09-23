@@ -49,6 +49,7 @@ export const homePage = html`
 				</table>
 				<button id=refresh>Refresh</button>
 				<button id=create>Create new wiki</button>
+				<button id=upgradeall>Upgrade All to Default</button>
 				<h2>Endpoint URL</h2>
 				<p>This is what should be pasted into the TiddlyPWA sync settings or the app uploader:<br><code id=endpoint></code></p>
 			</div>
@@ -104,14 +105,14 @@ export const homePage = html`
 						tidsizeTd.innerText = tidsize > 0 ? formatBytes(tidsize) : '-';
 						tr.appendChild(tidsizeTd);
 						const appsizeTd = document.createElement('td');
+						const appsizeA = document.createElement('a');
+						appsizeA.href = new URL(token.slice(0, token.length / 2) + '/app.html', document.location).toString();
 						if (appsize > 0) {
-							const appsizeA = document.createElement('a');
-							appsizeA.href = new URL(token.slice(0, token.length / 2) + '/app.html', document.location).toString();
-							appsizeA.innerText = formatBytes(appsize);
-							appsizeTd.appendChild(appsizeA);
+							appsizeA.innerText = formatBytes(appsize) + ' (custom)';
 						} else {
-							appsizeTd.innerText = '-';
+							appsizeA.innerText = 'v5.4.1 (default)';
 						}
+						appsizeTd.appendChild(appsizeA);
 						tr.appendChild(appsizeTd);
 						const btnsTd = document.createElement('td');
 						const btnReauth = document.createElement('button');
@@ -128,6 +129,15 @@ export const homePage = html`
 							serverReq({ op: 'delete', token }).then(() => document.getElementById('refresh').click());
 						};
 						btnsTd.appendChild(btnDel);
+						if (appsize > 0) {
+							const btnReset = document.createElement('button');
+							btnReset.innerText = 'Reset App';
+							btnReset.onclick = (e) => {
+								if (!confirm('Reset wiki app to server default? Custom app files will be removed.')) return;
+								serverReq({ op: 'resetapp', token }).then(() => document.getElementById('refresh').click());
+							};
+							btnsTd.appendChild(btnReset);
+						}
 						tr.appendChild(btnsTd);
 						wikirows.appendChild(tr);
 					}
@@ -164,6 +174,11 @@ export const homePage = html`
 					createBtn.onclick = () => {
 						serverReq({ op: 'create', note: prompt('Leave a note about this wiki if you want?') || '' }).then(() => refreshBtn.click());
 					}
+					const upgradeAllBtn = document.getElementById('upgradeall');
+					upgradeAllBtn.onclick = () => {
+						if (!confirm('Upgrade all wikis to the server default app? This will remove any custom app uploads.')) return;
+						serverReq({ op: 'resetallapps' }).then(() => refreshBtn.click());
+					};
 				});
 			</script>
 		</body>

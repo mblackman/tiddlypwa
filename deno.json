@@ -1,4 +1,11 @@
 {
+	"tasks": {
+		"build": "deno run --allow-env --allow-read --allow-write=output npm:tiddlywiki@5.4.1 --build",
+		"build:default-app": "deno run -A scripts/build_default_app.ts",
+		"build:all": "deno task build && deno task build:default-app",
+		"test": "deno test -A server/",
+		"fmt": "deno fmt --ignore='**/*.css' plugins server"
+	},
 	"fmt": {
 		"useTabs": true,
 		"lineWidth": 120,

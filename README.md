@@ -138,7 +138,7 @@ To compile the standalone HTML distribution files and service worker (assuming t
 ```shell
 TIDDLYWIKI_THEME_PATH=$HOME/src/github.com/paul-rouse/Notebook/themes \
 TIDDLYWIKI_PLUGIN_PATH=$HOME/src/github.com/paul-rouse/Notebook/plugins \
-npx tiddlywiki@5.3.5 --build
+npx tiddlywiki@5.4.1 --build
 ```
 
 Compiled assets are written to the `output/` directory.

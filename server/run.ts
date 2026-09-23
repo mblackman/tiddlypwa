@@ -25,6 +25,7 @@ export async function listen(args: any) {
 	}
 	const db = new SQLiteDatastore(dbPath);
 	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath);
+	await app.loadDefaultApp();
 
 	const socketPath = args.socket ?? envvar('SOCKET');
 	const port = Number(args.port ?? envvar('PORT') ?? 8000);

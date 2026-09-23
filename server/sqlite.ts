@@ -163,6 +163,14 @@ export class SQLiteDatastore extends DB implements Datastore {
 		});
 	}
 
+	dissociateFiles(token: string) {
+		this.query(sql`DELETE FROM wikifiles WHERE token = :token`, { token });
+	}
+
+	dissociateAllFiles() {
+		this.query(sql`DELETE FROM wikifiles`);
+	}
+
 	#wikiFileQuery = this.prepareQuery<[], File>(sql`
 		SELECT files.etag AS etag, rawsize, ctype, body
 		FROM files, wikifiles

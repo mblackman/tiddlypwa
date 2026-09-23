@@ -95,6 +95,20 @@ export class TiddlyPWASyncApp {
 		this.basepath = basepath.endsWith('/') ? basepath.slice(0, -1) : basepath;
 	}
 
+	defaultAppFiles: Map<string, { etag: string; rawsize: number; ctype: string; body: Uint8Array }> = new Map();
+
+	async loadDefaultApp(dir = 'server/default_app') {
+		for (const name of ['app.html', 'sw.js']) {
+			try {
+				const meta = JSON.parse(await Deno.readTextFile(`${dir}/${name}.meta.json`));
+				const body = await Deno.readFile(`${dir}/${name}.br`);
+				this.defaultAppFiles.set(name, { etag: meta.etag, rawsize: meta.rawsize, ctype: meta.ctype, body });
+			} catch {
+				// Default app files not available — new wikis will 404 until app is uploaded
+			}
+		}
+	}
+
 	adminPasswordCorrect(atoken: string) {
 		if (this.adminpwsalt.length === 0 || this.adminpwhash.length === 0) return false;
 		return argon.verify(utfenc.encode(atoken), this.adminpwsalt, this.adminpwhash);
@@ -258,6 +272,19 @@ export class TiddlyPWASyncApp {
 		return Response.json({}, { headers: respHdrs, status: 200 });
 	}
 
+	@adminAuth
+	@getWiki('EEXIST')
+	handleResetApp({ token }: Record<string, unknown>) {
+		this.db.dissociateFiles(token as string);
+		return Response.json({}, { headers: respHdrs, status: 200 });
+	}
+
+	@adminAuth
+	handleResetAllApps(_: unknown) {
+		this.db.dissociateAllFiles();
+		return Response.json({}, { headers: respHdrs, status: 200 });
+	}
+
 	@getWiki('EAUTH')
 	async handleUploadApp(
 		{ wiki, token, authcode, browserToken, files }: {
@@ -373,7 +400,33 @@ export class TiddlyPWASyncApp {
 		}
 		const file = this.db.getWikiFile(halftoken, filename);
 		if (!file) {
-			return Response.json({ error: 'EEXIST' }, { headers: respHdrs, status: 404 });
+			// Fallback to bundled default app files
+			const defaultFile = this.defaultAppFiles.get(filename);
+			if (!defaultFile) {
+				return Response.json({ error: 'EEXIST' }, { headers: respHdrs, status: 404 });
+			}
+			const supportsBrotli = supportsEncoding(req.headers, 'br');
+			const etagstr = '"' + defaultFile.etag + (supportsBrotli ? '-b' : '-x') + '"';
+			const headers = new Headers({
+				...respHdrs,
+				'content-type': defaultFile.ctype,
+				'vary': 'Accept-Encoding',
+				'cache-control': 'no-cache',
+				'etag': etagstr,
+			});
+			if (stripWeak(req.headers.get('if-none-match')) === etagstr) {
+				return new Response(null, { status: 304, headers });
+			}
+			let body: Uint8Array | null = null;
+			if (supportsBrotli) {
+				headers.set('content-encoding', 'br');
+				headers.set('content-length', defaultFile.body.length.toString());
+				if (req.method !== 'HEAD') body = defaultFile.body;
+			} else {
+				headers.set('content-length', defaultFile.rawsize.toString());
+				if (req.method !== 'HEAD') body = brotli.decompress(defaultFile.body);
+			}
+			return new Response(body as unknown as BodyInit, { headers });
 		}
 		const [supportsBrotli, etagstr] = processEtag(file.etag, req.headers);
 		// if we decompress and Deno recompresses to something else (gzip) it'll mark the ETag as a weak validator
@@ -422,6 +475,8 @@ export class TiddlyPWASyncApp {
 			if (data.op === 'create') return this.handleCreate(data);
 			if (data.op === 'delete') return this.handleDelete(data);
 			if (data.op === 'reauth') return this.handleReauth(data);
+			if (data.op === 'resetapp') return this.handleResetApp(data);
+			if (data.op === 'resetallapps') return this.handleResetAllApps(data);
 			if (data.op === 'uploadapp') return await this.handleUploadApp(data);
 		}
 		if (req.method === 'GET') {

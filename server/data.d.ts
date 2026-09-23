@@ -35,6 +35,8 @@ export interface Datastore {
 	fileExists(etag: Uint8Array): boolean;
 	storeFile(file: File): void;
 	associateFile(token: string, etag: Uint8Array, name: string): void;
+	dissociateFiles(token: string): void;
+	dissociateAllFiles(): void;
 	getWikiFile(halftoken: string, name: string): File | undefined;
 	getTiddler(token: string, thash: Uint8Array): Tiddler | undefined;
 	tiddlersChangedSince(token: string, since: Date): Generator<Tiddler>;

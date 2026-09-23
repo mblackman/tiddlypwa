@@ -121,7 +121,7 @@ Assuming the [Paul Rouse Notebook theme](https://github.com/paul-rouse/Notebook)
 ```shell
 TIDDLYWIKI_THEME_PATH=$HOME/src/github.com/paul-rouse/Notebook/themes \
 TIDDLYWIKI_PLUGIN_PATH=$HOME/src/github.com/paul-rouse/Notebook/plugins \
-npx tiddlywiki@5.3.5 --build
+npx tiddlywiki@5.4.1 --build
 ```
 
 ---
