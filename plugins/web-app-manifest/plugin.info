@@ -3,7 +3,7 @@
 	"title": "$:/plugins/mblackman/web-app-manifest",
 	"description": "Web Application Manifest generator",
 	"author": "Matt Blackman",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"core-version": ">=5.2.0",
 	"list": "readme license",
 	"source": "https://github.com/mblackman/tiddlypwa",

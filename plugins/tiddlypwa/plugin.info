@@ -3,7 +3,7 @@
 	"title": "$:/plugins/mblackman/tiddlypwa",
 	"description": "Offline-first storage & sync solution",
 	"author": "Matt Blackman",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"core-version": ">=5.2.0",
 	"list": "readme filters license",
 	"source": "https://github.com/mblackman/tiddlypwa",
