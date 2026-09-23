@@ -333,7 +333,7 @@ export class TiddlyPWASyncApp {
 		return Response.json({ urlprefix: token.slice(0, token.length / 2) + '/' }, { headers: respHdrs, status: 200 });
 	}
 
-	handleMonitor(query: URLSearchParams) {
+	handleMonitor(query: URLSearchParams, pingIntervalMs = 25000) {
 		const token = query.get('token');
 		const browserToken = query.get('browserToken');
 		if (!token || !browserToken) {
@@ -343,6 +343,7 @@ export class TiddlyPWASyncApp {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 		let pushChan: BroadcastChannel;
+		let pingTimer: ReturnType<typeof setInterval> | undefined;
 		return new Response(
 			new ReadableStream({
 				start(ctrl) {
@@ -351,9 +352,19 @@ export class TiddlyPWASyncApp {
 					pushChan.onmessage = (evt) => {
 						if (evt.data.exclude !== browserToken) ctrl.enqueue('event: sync\ndata: 1\n\n');
 					};
+					if (pingIntervalMs > 0) {
+						pingTimer = setInterval(() => {
+							try {
+								ctrl.enqueue(': keepalive\n\n');
+							} catch {
+								clearInterval(pingTimer);
+							}
+						}, pingIntervalMs);
+					}
 				},
 				cancel() {
 					pushChan.close();
+					if (pingTimer !== undefined) clearInterval(pingTimer);
 				},
 			}).pipeThrough(new TextEncoderStream()),
 			{

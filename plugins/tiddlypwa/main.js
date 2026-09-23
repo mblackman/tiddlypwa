@@ -211,14 +211,25 @@ Formatted with `deno fmt`.
 				(_evt) => {
 					this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOnline', text: 'yes' });
 					if (this.db) {
-						this.backgroundSync();
-						this.startRealtimeMonitor();
+						clearTimeout(this.wakeTimer);
+						this.wakeTimer = setTimeout(() => {
+							this.backgroundSync();
+							this.startRealtimeMonitor();
+						}, 1500);
 					}
 				},
 			);
 
 			document.addEventListener('visibilitychange', (_evt) => {
-				if (document.visibilityState === 'visible') this.backgroundSync();
+				if (document.visibilityState === 'visible') {
+					clearTimeout(this.visibilityTimer);
+					this.visibilityTimer = setTimeout(() => {
+						this.backgroundSync();
+						if (this.db && this.startedMonitor && this.monitorStream?.readyState === EventSource.CLOSED) {
+							this.startRealtimeMonitor();
+						}
+					}, 1000);
+				}
 			});
 
 			$tw.rootWidget.addEventListener('tiddlypwa-remember', (_evt) => {
@@ -357,7 +368,12 @@ Formatted with `deno fmt`.
 		async initServiceWorker() {
 			try {
 				const reg = await navigator.serviceWorker.register('sw.js');
-				await reg.update();
+				try {
+					await reg.update();
+				} catch (_updateErr) {
+					// Update check failure (e.g. temporary DNS failure or offline) is non-fatal;
+					// existing active worker continues to serve offline content.
+				}
 			} catch (e) {
 				console.error(e);
 				if (!navigator.onLine) return;
@@ -1183,36 +1199,53 @@ Formatted with `deno fmt`.
 				this.logger.log('local change', tidjson.thash);
 			}
 			this.syncAbort = new AbortController();
-			const resp = await fetch(url, {
-				signal: this.syncAbort.signal,
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-				},
-				body: JSON.stringify({
-					tiddlypwa: 1,
-					op: 'sync',
-					token,
-					browserToken: this.browserToken,
-					authcode: await b64enc(await this.titlehash(token)),
-					salt: await b64enc(this.salt),
-					now: new Date(), // only for a desync check
-					lastSync,
-					clientChanges,
-				}),
-			}).catch((e) => {
+			const timeoutSignal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(30000) : null;
+			const syncSignal = (typeof AbortSignal.any === 'function' && timeoutSignal)
+				? AbortSignal.any([this.syncAbort.signal, timeoutSignal])
+				: this.syncAbort.signal;
+			let syncTimeoutTimer = null;
+			if (!AbortSignal.any || !timeoutSignal) {
+				syncTimeoutTimer = setTimeout(() => this.syncAbort?.abort(), 30000);
+			}
+			let resp;
+			let respJson;
+			try {
+				resp = await fetch(url, {
+					signal: syncSignal,
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify({
+						tiddlypwa: 1,
+						op: 'sync',
+						token,
+						browserToken: this.browserToken,
+						authcode: await b64enc(await this.titlehash(token)),
+						salt: await b64enc(this.salt),
+						now: new Date(), // only for a desync check
+						lastSync,
+						clientChanges,
+					}),
+				});
+				if (!resp.ok) {
+					throw new Error(
+						await resp
+							.json()
+							.then(({ error }) => knownErrors[error] || error)
+							.catch((_e) => 'Server returned error ' + resp.status),
+					);
+				}
+				respJson = await resp.json();
+			} catch (e) {
+				if (e.name === 'AbortError') throw e;
+				if (e.message && Object.values(knownErrors).includes(e.message)) throw e;
 				throw new FetchError(e); // so silly that fetch throws inconsistent stuff across browsers
-			});
-			if (!resp.ok) {
-				throw new Error(
-					await resp
-						.json()
-						.then(({ error }) => knownErrors[error] || error)
-						.catch((_e) => 'Server returned error ' + resp.status),
-				);
+			} finally {
+				if (syncTimeoutTimer) clearTimeout(syncTimeoutTimer);
 			}
 			const serverTimeHdr = resp.headers.get('x-server-time');
-			const { serverChanges, appEtag, conflicts } = await resp.json();
+			const { serverChanges, appEtag, conflicts } = respJson;
 			const conflictSet = new Set(conflicts || []);
 			const toDecrypt = [];
 			const titleHashesToDelete = new Set();

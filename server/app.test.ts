@@ -554,3 +554,30 @@ Deno.test('wiki asset serving: resetapp reverts custom app back to bundled defau
 
 	await deleteWiki(tok);
 });
+
+Deno.test('monitor stream sends periodic keepalive comments and handles cancellation', async () => {
+	const tok = await createWiki();
+	const query = new URLSearchParams({ token: tok, browserToken: 'testbrowser' });
+	// Use a 20ms interval for fast test execution
+	const resp = app.handleMonitor(query, 20);
+	assertEquals(resp.status, 200);
+	assertEquals(resp.headers.get('content-type'), 'text/event-stream');
+
+	const reader = resp.body!.getReader();
+	const decoder = new TextDecoder();
+	let chunks = '';
+
+	// Read initial 'hi' event and at least one keepalive comment
+	while (!chunks.includes(': keepalive')) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		chunks += decoder.decode(value, { stream: true });
+	}
+
+	assertEquals(chunks.includes('event: hi\ndata: 1\n\n'), true);
+	assertEquals(chunks.includes(': keepalive\n\n'), true);
+
+	// Cancel stream and verify clean shutdown
+	await reader.cancel();
+	await deleteWiki(tok);
+});

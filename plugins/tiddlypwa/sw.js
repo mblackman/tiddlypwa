@@ -13,8 +13,13 @@ async function fromNetCaching(req, cacheResp) {
 	try {
 		// "preflight" for letting the server wake up if it's on a free service that suspends instances:
 		await fetch(req.url, { method: 'OPTIONS', cache: 'no-cache' }).catch(() => {});
-		const response = await fetch(new Request(req), { cache: 'no-cache' });
+		const requestObj = new Request(req);
+		const response = await fetch(requestObj, { cache: 'no-cache' });
 		if (response.ok) {
+			const ctype = response.headers.get('content-type') || '';
+			if ((requestObj.destination === 'document' || requestObj.url.endsWith('.html')) && !ctype.includes('text/html')) {
+				return cacheResp || response;
+			}
 			const changed = cacheResp && (await response.clone().text() !== await cacheResp.text());
 			const cache = await caches.open(CACHE);
 			await cache.put(req, response.clone());
@@ -71,7 +76,13 @@ self.addEventListener('install', (evt) => {
 		if (clientList.length > 0 && clientList[0].url) {
 			const u = new URL(clientList[0].url);
 			u.hash = '';
-			await fromNetCaching(new Request(u.href));
+			try {
+				const cache = await caches.open(CACHE);
+				const cached = await cache.match(u.href);
+				await fromNetCaching(new Request(u.href), cached);
+			} catch (_err) {
+				// Network or DNS failure during install must not transition worker to redundant state
+			}
 		}
 	}());
 });
