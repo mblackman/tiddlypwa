@@ -132,7 +132,7 @@ export class SQLiteDatastore extends DB implements Datastore {
 		this.query(sql`INSERT INTO wikis (token, note) VALUES (:token, :note)`, { token, note });
 	}
 
-	updateWikiAuthcode(token: string, authcode?: string) {
+	updateWikiAuthcode(token: string, authcode?: string | null) {
 		this.query(sql`UPDATE wikis SET authcode = :authcode WHERE token = :token`, { token, authcode });
 	}
 
@@ -230,7 +230,9 @@ export class SQLiteDatastore extends DB implements Datastore {
 		ON CONFLICT (token, thash) DO NOTHING
 	`);
 
-	#updateQuery = this.prepareQuery(sql`
+	// Atomic conditional update: only succeeds if concurrency check passes.
+	// When baseMtime is provided, update only if the existing mtime <= baseMtime.
+	#updateWithBaseMtimeQuery = this.prepareQuery(sql`
 		UPDATE tiddlers SET
 			iv = :iv,
 			ct = :ct,
@@ -238,53 +240,54 @@ export class SQLiteDatastore extends DB implements Datastore {
 			sbct = :sbct,
 			mtime = :mtime,
 			deleted = :deleted
-		WHERE token = :token AND thash = :thash
+		WHERE token = :token AND thash = :thash AND mtime <= :baseMtime
+	`);
+
+	// Fallback for clients that don't send baseMtime: update only if existing mtime < new mtime.
+	#updateWithMtimeQuery = this.prepareQuery(sql`
+		UPDATE tiddlers SET
+			iv = :iv,
+			ct = :ct,
+			sbiv = :sbiv,
+			sbct = :sbct,
+			mtime = :mtime,
+			deleted = :deleted
+		WHERE token = :token AND thash = :thash AND mtime < :mtime
 	`);
 
 	upsertTiddler(token: string, tiddler: Tiddler): { success: boolean; conflict?: boolean } {
-		const existing = this.#tiddlerQuery.allEntries({ token, thash: tiddler.thash });
 		const mtimeMs = tiddler.mtime.getTime();
+		const params = {
+			token,
+			thash: tiddler.thash,
+			iv: tiddler.iv,
+			ct: tiddler.ct,
+			sbiv: tiddler.sbiv,
+			sbct: tiddler.sbct,
+			mtime: mtimeMs,
+			deleted: tiddler.deleted ? 1 : 0,
+		};
 
-		if (existing.length > 0) {
-			const existingMtime = existing[0].mtime;
-			if (tiddler.baseMtime !== undefined) {
-				const baseMtimeMs = tiddler.baseMtime.getTime();
-				if (existingMtime > baseMtimeMs) {
-					return { success: false, conflict: true };
-				}
-			} else {
-				// Fallback if no baseMtime provided (backward compatibility)
-				if (existingMtime >= mtimeMs) {
-					return { success: false, conflict: true };
-				}
-			}
-			this.#updateQuery.execute({
-				token,
-				thash: tiddler.thash,
-				iv: tiddler.iv,
-				ct: tiddler.ct,
-				sbiv: tiddler.sbiv,
-				sbct: tiddler.sbct,
-				mtime: mtimeMs,
-				deleted: tiddler.deleted ? 1 : 0,
-			});
-			return { success: true };
-		} else {
-			this.#insertQuery.execute({
-				token,
-				thash: tiddler.thash,
-				iv: tiddler.iv,
-				ct: tiddler.ct,
-				sbiv: tiddler.sbiv,
-				sbct: tiddler.sbct,
-				mtime: mtimeMs,
-				deleted: tiddler.deleted ? 1 : 0,
-			});
-			if (this.changes === 0) {
-				// Failed to insert due to concurrent conflict
-				return { success: false, conflict: true };
-			}
+		// Try insert first (handles the common case of new tiddlers).
+		this.#insertQuery.execute(params);
+		if (this.changes > 0) {
 			return { success: true };
 		}
+
+		// Row exists — attempt atomic conditional update.
+		if (tiddler.baseMtime !== undefined) {
+			this.#updateWithBaseMtimeQuery.execute({
+				...params,
+				baseMtime: tiddler.baseMtime.getTime(),
+			});
+		} else {
+			// Backward compatibility: update only if our mtime is strictly newer.
+			this.#updateWithMtimeQuery.execute(params);
+		}
+
+		if (this.changes > 0) {
+			return { success: true };
+		}
+		return { success: false, conflict: true };
 	}
 }

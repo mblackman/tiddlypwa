@@ -26,7 +26,7 @@ export async function updateWikiFiles(dbPath = '.data/tiddly.db', targetToken?: 
 		});
 	}
 
-	const wikis = targetToken ? [{ token: targetToken }] : db.listWikis();
+	const wikis: { token: string }[] = targetToken ? [{ token: targetToken }] : db.listWikis();
 	if (wikis.length === 0 && targetToken) {
 		wikis.push({ token: targetToken });
 	}

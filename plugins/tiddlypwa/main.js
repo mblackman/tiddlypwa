@@ -1378,12 +1378,29 @@ Formatted with `deno fmt`.
 				}
 			}
 
-			// Batch commit canonical updates to IndexedDB in one synchronous transaction
+			// Batch commit canonical updates to IndexedDB in one synchronous transaction.
+			// Use read-modify-write to avoid overwriting local edits made during the fetch.
 			if (idbWrites.length > 0) {
 				const txn = this.db.transaction('tiddlers', 'readwrite');
 				const store = txn.objectStore('tiddlers');
 				for (const tid of idbWrites) {
-					store.put(tid);
+					const getReq = store.get(tid.thash);
+					getReq.onsuccess = () => {
+						const current = getReq.result;
+						// If a local edit happened during the fetch, its mtime will be newer
+						// than what we snapshotted. Don't overwrite — it'll sync next cycle.
+						if (current && current.mtime instanceof Date) {
+							const snapshotEntry = localChangesByHash.get(
+								[...localChangesByHash.keys()].find((k) =>
+									arrayEq(localChangesByHash.get(k).thash, tid.thash)
+								),
+							);
+							if (snapshotEntry && current.mtime.getTime() > snapshotEntry.mtime.getTime()) {
+								return;
+							}
+						}
+						store.put(tid);
+					};
 				}
 				await new Promise((resolve, reject) => {
 					txn.oncomplete = resolve;
@@ -1391,19 +1408,26 @@ Formatted with `deno fmt`.
 				});
 			}
 
-			// Update baseMtime for successfully synced local changes that did not conflict
-			const nonConflictedLocalWrites = [];
+			// Update baseMtime for successfully synced local changes that did not conflict.
+			// Read-modify-write: only touch baseMtime, preserving any newer content.
+			const nonConflictedLocalHashes = [];
 			for (const [b64hash, tid] of localChangesByHash) {
 				if (!conflictSet.has(b64hash)) {
-					tid.baseMtime = tid.mtime;
-					nonConflictedLocalWrites.push(tid);
+					nonConflictedLocalHashes.push({ thash: tid.thash, newBaseMtime: tid.mtime });
 				}
 			}
-			if (nonConflictedLocalWrites.length > 0) {
+			if (nonConflictedLocalHashes.length > 0) {
 				const txn = this.db.transaction('tiddlers', 'readwrite');
 				const store = txn.objectStore('tiddlers');
-				for (const tid of nonConflictedLocalWrites) {
-					store.put(tid);
+				for (const { thash, newBaseMtime } of nonConflictedLocalHashes) {
+					const getReq = store.get(thash);
+					getReq.onsuccess = () => {
+						const current = getReq.result;
+						if (current) {
+							current.baseMtime = newBaseMtime;
+							store.put(current);
+						}
+					};
 				}
 				await new Promise((resolve, reject) => {
 					txn.oncomplete = resolve;

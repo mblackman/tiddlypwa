@@ -268,7 +268,7 @@ export class TiddlyPWASyncApp {
 	@adminAuth
 	@getWiki('EEXIST')
 	handleReauth({ token }: Record<string, unknown>) {
-		this.db.updateWikiAuthcode(token as string, undefined);
+		this.db.updateWikiAuthcode(token as string, null);
 		return Response.json({}, { headers: respHdrs, status: 200 });
 	}
 
@@ -350,7 +350,12 @@ export class TiddlyPWASyncApp {
 					ctrl.enqueue('event: hi\ndata: 1\n\n'); // seems to ensure the 'open' event is fired?
 					pushChan = new BroadcastChannel(token);
 					pushChan.onmessage = (evt) => {
-						if (evt.data.exclude !== browserToken) ctrl.enqueue('event: sync\ndata: 1\n\n');
+						try {
+							if (evt.data.exclude !== browserToken) ctrl.enqueue('event: sync\ndata: 1\n\n');
+						} catch {
+							clearInterval(pingTimer);
+							pushChan.close();
+						}
 					};
 					if (pingIntervalMs > 0) {
 						pingTimer = setInterval(() => {
@@ -358,6 +363,7 @@ export class TiddlyPWASyncApp {
 								ctrl.enqueue(': keepalive\n\n');
 							} catch {
 								clearInterval(pingTimer);
+								pushChan.close();
 							}
 						}, pingIntervalMs);
 					}
