@@ -1,5 +1,5 @@
 # Stage 1: Build the default TiddlyWiki app
-FROM denoland/deno:2.9.7 AS builder
+FROM --platform=$BUILDPLATFORM denoland/deno:2.9.7 AS builder
 
 WORKDIR /build
 COPY deno.json deno.lock ./
