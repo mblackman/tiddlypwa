@@ -17,7 +17,10 @@ async function fromNetCaching(req, cacheResp) {
 		const response = await fetch(requestObj, { cache: 'no-cache' });
 		if (response.ok) {
 			const ctype = response.headers.get('content-type') || '';
-			if ((requestObj.destination === 'document' || requestObj.url.endsWith('.html')) && !ctype.includes('text/html')) {
+			if (
+				(requestObj.mode === 'navigate' || requestObj.destination === 'document' || requestObj.url.endsWith('.html')) &&
+				!ctype.includes('text/html')
+			) {
 				return cacheResp || response;
 			}
 			const changed = cacheResp && (await response.clone().text() !== await cacheResp.text());

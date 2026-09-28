@@ -102,11 +102,12 @@ Formatted with `deno fmt`.
 		});
 		while (cursor) {
 			yield cursor.value;
-			cursor.continue();
-			cursor = await new Promise((resolve, reject) => {
+			const nextPromise = new Promise((resolve, reject) => {
 				res = resolve;
 				rej = reject;
 			});
+			cursor.continue();
+			cursor = await nextPromise;
 		}
 	}
 
@@ -1756,9 +1757,7 @@ Formatted with `deno fmt`.
 						// than what we snapshotted. Don't overwrite — it'll sync next cycle.
 						if (current && current.mtime instanceof Date) {
 							const snapshotEntry = localChangesByHash.get(
-								[...localChangesByHash.keys()].find((k) =>
-									arrayEq(localChangesByHash.get(k).thash, tid.thash)
-								),
+								[...localChangesByHash.keys()].find((k) => arrayEq(localChangesByHash.get(k).thash, tid.thash)),
 							);
 							if (snapshotEntry && current.mtime.getTime() > snapshotEntry.mtime.getTime()) {
 								return;

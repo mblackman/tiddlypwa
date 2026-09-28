@@ -3,9 +3,9 @@ FROM --platform=$BUILDPLATFORM denoland/deno:2.9.7 AS builder
 
 WORKDIR /build
 COPY deno.json deno.lock ./
-COPY plugins/ ./plugins/
-COPY themes/ ./themes/
-COPY tiddlers/ ./tiddlers/
+COPY plugin[s]/ ./plugins/
+COPY theme[s]/ ./themes/
+COPY tiddler[s]/ ./tiddlers/
 COPY tiddlywiki.info ./
 COPY server/ ./server/
 COPY scripts/ ./scripts/

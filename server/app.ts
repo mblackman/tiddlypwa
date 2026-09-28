@@ -297,11 +297,22 @@ export class TiddlyPWASyncApp {
 		if (typeof files !== 'object' || !files) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		for (const [filename, value] of Object.entries(files)) {
+		const fileEntries = Object.entries(files);
+		if (fileEntries.length === 0 || fileEntries.length > 20) {
+			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+		}
+		let totalBytes = 0;
+		for (const [filename, value] of fileEntries) {
 			if (
-				typeof filename !== 'string' || typeof value !== 'object' || !value ||
-				typeof (value as any).body !== 'string' || typeof (value as any).ctype !== 'string'
+				typeof filename !== 'string' || filename.length === 0 || filename.length > 255 ||
+				typeof value !== 'object' || !value ||
+				typeof (value as any).body !== 'string' || typeof (value as any).ctype !== 'string' ||
+				(value as any).body.length > 25 * 1024 * 1024
 			) {
+				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+			}
+			totalBytes += (value as any).body.length;
+			if (totalBytes > 50 * 1024 * 1024) {
 				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 			}
 		}

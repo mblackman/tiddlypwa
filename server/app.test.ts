@@ -581,3 +581,29 @@ Deno.test('monitor stream sends periodic keepalive comments and handles cancella
 	await reader.cancel();
 	await deleteWiki(tok);
 });
+
+Deno.test('wiki asset serving: rejects uploads exceeding limits or malformed input', async () => {
+	const tok = await createWiki();
+
+	// Empty files object
+	const emptyRes = await api({ op: 'uploadapp', token: tok, files: {} });
+	assertEquals(emptyRes.error, 'EPROTO');
+
+	// Too many files (> 20)
+	const tooManyFiles: Record<string, unknown> = {};
+	for (let i = 0; i < 21; i++) {
+		tooManyFiles[`file_${i}.txt`] = { body: 'content', ctype: 'text/plain' };
+	}
+	const tooManyRes = await api({ op: 'uploadapp', token: tok, files: tooManyFiles });
+	assertEquals(tooManyRes.error, 'EPROTO');
+
+	// Invalid empty filename
+	const emptyNameRes = await api({
+		op: 'uploadapp',
+		token: tok,
+		files: { '': { body: 'content', ctype: 'text/plain' } },
+	});
+	assertEquals(emptyNameRes.error, 'EPROTO');
+
+	await deleteWiki(tok);
+});
