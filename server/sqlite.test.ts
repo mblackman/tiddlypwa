@@ -10,7 +10,7 @@ Deno.test('SQLiteDatastore: upsertTiddler respects batchWriteTimeMs', () => {
 
     const res1 = db.upsertTiddler('token1', {
         thash,
-        iv: null, ct: null, sbiv: null, sbct: null,
+        iv: undefined, ct: undefined, sbiv: undefined, sbct: undefined,
         mtime: new Date(1000), // Client time
         deleted: false
     }, batchWriteTimeMs);
