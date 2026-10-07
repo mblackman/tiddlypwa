@@ -224,6 +224,18 @@ export class SQLiteDatastore extends DB implements Datastore {
 		return { ...rows[0], mtime: parseTime(rows[0].mtime), deleted: Boolean(rows[0].deleted) };
 	}
 
+	#maxMtimeQuery = this.prepareQuery<[], { mtime: number | null }>(sql`
+		SELECT MAX(mtime) as mtime FROM tiddlers WHERE token = :token
+	`);
+	maxMtime(token: string): number {
+		const rows = this.#maxMtimeQuery.allEntries({ token });
+		return rows.length > 0 && rows[0].mtime !== null ? rows[0].mtime : 0;
+	}
+	getNextMtime(token: string): number {
+		const maxMtime = this.maxMtime(token);
+		return Math.max(Date.now(), maxMtime + 1);
+	}
+
 	#insertQuery = this.prepareQuery(sql`
 		INSERT INTO tiddlers (token, thash, iv, ct, sbiv, sbct, mtime, deleted)
 		VALUES (:token, :thash, :iv, :ct, :sbiv, :sbct, :mtime, :deleted)
@@ -252,11 +264,13 @@ export class SQLiteDatastore extends DB implements Datastore {
 			sbct = :sbct,
 			mtime = :mtime,
 			deleted = :deleted
-		WHERE token = :token AND thash = :thash AND mtime < :mtime
+		WHERE token = :token AND thash = :thash AND mtime < :clientMtime
 	`);
 
-	upsertTiddler(token: string, tiddler: Tiddler): { success: boolean; conflict?: boolean } {
-		const mtimeMs = tiddler.mtime.getTime();
+	upsertTiddler(token: string, tiddler: Tiddler, writeMtimeMs?: number): { success: boolean; conflict?: boolean } {
+		const clientMtimeMs = tiddler.mtime.getTime();
+		const finalMtimeMs = writeMtimeMs !== undefined ? writeMtimeMs : clientMtimeMs;
+		
 		const params = {
 			token,
 			thash: tiddler.thash,
@@ -264,7 +278,7 @@ export class SQLiteDatastore extends DB implements Datastore {
 			ct: tiddler.ct,
 			sbiv: tiddler.sbiv,
 			sbct: tiddler.sbct,
-			mtime: mtimeMs,
+			mtime: finalMtimeMs,
 			deleted: tiddler.deleted ? 1 : 0,
 		};
 
@@ -282,7 +296,10 @@ export class SQLiteDatastore extends DB implements Datastore {
 			});
 		} else {
 			// Backward compatibility: update only if our mtime is strictly newer.
-			this.#updateWithMtimeQuery.execute(params);
+			this.#updateWithMtimeQuery.execute({
+				...params,
+				clientMtime: clientMtimeMs
+			});
 		}
 
 		if (this.changes > 0) {

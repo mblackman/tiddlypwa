@@ -65,14 +65,10 @@ function processEtag(etag: Uint8Array, headers: Headers): [boolean, string] {
 	return [supportsBrotli, '"' + encodeBase64Url(etag) + (supportsBrotli ? '-b' : '-x') + '"'];
 }
 
-const monitorChannels = new Map<string, BroadcastChannel>();
 function notifyMonitors(token: string, browserToken: string) {
-	let chan = monitorChannels.get(token);
-	if (!chan) {
-		chan = new BroadcastChannel(token);
-		monitorChannels.set(token, chan);
-	}
+	const chan = new BroadcastChannel(token);
 	chan.postMessage({ exclude: browserToken });
+	chan.close();
 }
 
 // ReadableStreamDefaultControllerCallback is deprecated
@@ -103,7 +99,8 @@ export class TiddlyPWASyncApp {
 				const meta = JSON.parse(await Deno.readTextFile(`${dir}/${name}.meta.json`));
 				const body = await Deno.readFile(`${dir}/${name}.br`);
 				this.defaultAppFiles.set(name, { etag: meta.etag, rawsize: meta.rawsize, ctype: meta.ctype, body });
-			} catch {
+			} catch (e) {
+				console.error("Failed to load default app file:", name, e);
 				// Default app files not available — new wikis will 404 until app is uploaded
 			}
 		}
@@ -145,7 +142,7 @@ export class TiddlyPWASyncApp {
 					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 				}
 				const { thash, iv, ct, sbiv, sbct, mtime, deleted, baseMtime } = change;
-				const itemMtime = mtime ? new Date(mtime) : nowDate;
+				const itemMtime = mtime ? new Date(mtime) : new Date(0);
 				if (!Number.isFinite(itemMtime.getTime())) {
 					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 				}
@@ -175,11 +172,15 @@ export class TiddlyPWASyncApp {
 		const apphtml = this.db.getWikiFile(token, 'app.html');
 		const [_, appEtag] = apphtml ? processEtag(apphtml.etag, headers) : [null, null];
 
+		const snapshotMaxMtime = this.db.maxMtime(token);
+		const serverTimeDate = snapshotMaxMtime > 0 ? new Date(snapshotMaxMtime) : new Date(0);
+
 		return streamsponse((ctrl) => {
 			ctrl.enqueue(`{"appEtag":${JSON.stringify(appEtag)},"serverChanges":[`);
 
 			let hasWritten = false;
 			const conflicts: string[] = [];
+			const successes: { thash: string; mtime: string }[] = [];
 
 			this.db.transaction(() => {
 				if (!(wiki as Wiki).authcode && authcode) this.db.updateWikiAuthcode(token, authcode);
@@ -203,8 +204,9 @@ export class TiddlyPWASyncApp {
 					);
 					if (!firstWritten) firstWritten = true;
 				}
+				const batchWriteTimeMs = Math.max(Date.now(), this.db.maxMtime(token) + 1);
 				for (const change of decodedChanges) {
-					const res = this.db.upsertTiddler(token, change);
+					const res = this.db.upsertTiddler(token, change, batchWriteTimeMs);
 					if (res.conflict) {
 						const b64hash = encodeBase64(change.thash);
 						conflicts.push(b64hash);
@@ -228,18 +230,19 @@ export class TiddlyPWASyncApp {
 						}
 					} else if (res.success) {
 						hasWritten = true;
+						successes.push({ thash: encodeBase64(change.thash), mtime: new Date(batchWriteTimeMs).toISOString() });
 					}
 				}
 			});
-			if (conflicts.length > 0) {
-				ctrl.enqueue(`\n],"conflicts":${JSON.stringify(conflicts)}}`);
-			} else {
-				ctrl.enqueue('\n]}');
-			}
+			let trailer = '\n]';
+			if (conflicts.length > 0) trailer += `,"conflicts":${JSON.stringify(conflicts)}`;
+			if (successes.length > 0) trailer += `,"successes":${JSON.stringify(successes)}`;
+			trailer += '}';
+			ctrl.enqueue(trailer);
 			ctrl.close();
 			if (hasWritten && typeof browserToken === 'string') notifyMonitors(token, browserToken);
 		}, {
-			headers: { ...respHdrs, 'content-type': 'application/json', 'x-server-time': nowDate.toISOString() },
+			headers: { ...respHdrs, 'content-type': 'application/json', 'x-server-time': serverTimeDate.toISOString() },
 		});
 	}
 

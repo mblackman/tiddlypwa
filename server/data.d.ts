@@ -39,6 +39,8 @@ export interface Datastore {
 	dissociateAllFiles(): void;
 	getWikiFile(halftoken: string, name: string): File | undefined;
 	getTiddler(token: string, thash: Uint8Array): Tiddler | undefined;
+	getNextMtime(token: string): number;
+	maxMtime(token: string): number;
 	tiddlersChangedSince(token: string, since: Date): Generator<Tiddler>;
-	upsertTiddler(token: string, tiddler: Tiddler): { success: boolean; conflict?: boolean };
+	upsertTiddler(token: string, tiddler: Tiddler, writeMtimeMs?: number): { success: boolean; conflict?: boolean };
 }
