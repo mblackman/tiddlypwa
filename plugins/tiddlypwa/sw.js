@@ -23,7 +23,9 @@ async function fromNetCaching(req, cacheResp) {
 			) {
 				return cacheResp || response;
 			}
-			const changed = cacheResp && (await response.clone().text() !== await cacheResp.text());
+			const etagNew = response.headers.get('etag');
+			const etagOld = cacheResp ? cacheResp.headers.get('etag') : null;
+			const changed = cacheResp && etagNew && etagOld && etagNew !== etagOld;
 			const cache = await caches.open(CACHE);
 			await cache.put(req, response.clone());
 			if (changed) {
@@ -63,7 +65,8 @@ self.addEventListener('message', (evt) =>
 	}()));
 
 self.addEventListener('fetch', (evt) => {
-	if (evt.request.destination === 'document' && evt.request.method === 'GET') {
+	const url = new URL(evt.request.url);
+	if (evt.request.method === 'GET' && url.origin === location.origin && !url.pathname.endsWith('/tid.dly')) {
 		evt.respondWith(fromCache(evt));
 	}
 });
