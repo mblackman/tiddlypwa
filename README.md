@@ -1,6 +1,6 @@
 # TiddlyPWA
 
-[![Docker Build](https://github.com/mblackman/tiddlypwa/actions/workflows/docker.yml/badge.svg)](https://github.com/mblackman/tiddlypwa/actions/workflows/docker.yml)
+[![Build and Release](https://github.com/mblackman/tiddlypwa/actions/workflows/release.yml/badge.svg)](https://github.com/mblackman/tiddlypwa/actions/workflows/release.yml)
 [![License: 0BSD](https://img.shields.io/badge/License-0BSD-blue.svg)](LICENSE)
 [![Deno](https://img.shields.io/badge/Deno-2.x-black?logo=deno)](https://deno.com)
 
