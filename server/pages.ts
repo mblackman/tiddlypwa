@@ -114,7 +114,7 @@ export const homePage = html`
 						tr.appendChild(tidsizeTd);
 						const appsizeTd = document.createElement('td');
 						const appsizeA = document.createElement('a');
-						appsizeA.href = new URL(token.slice(0, token.length / 2) + '/app.html#token=' + token, document.location).toString();
+						appsizeA.href = new URL(token.slice(0, token.length / 2) + '/app.html?token=' + token, document.location).toString();
 						if (appsize > 0) {
 							appsizeA.innerText = formatBytes(appsize) + ' (custom)';
 						} else {
@@ -123,6 +123,12 @@ export const homePage = html`
 						appsizeTd.appendChild(appsizeA);
 						tr.appendChild(appsizeTd);
 						const btnsTd = document.createElement('td');
+						const btnOpen = document.createElement('button');
+						btnOpen.innerText = 'Open App';
+						btnOpen.onclick = () => {
+							window.open(new URL(token.slice(0, token.length / 2) + '/app.html?token=' + token, document.location).toString(), '_blank');
+						};
+						btnsTd.appendChild(btnOpen);
 						const btnReauth = document.createElement('button');
 						btnReauth.innerText = 'Clear Auth';
 						btnReauth.onclick = (e) => {
@@ -180,7 +186,17 @@ export const homePage = html`
 						});
 					};
 					createBtn.onclick = () => {
-						serverReq({ op: 'create', note: prompt('Leave a note about this wiki if you want?') || '' }).then(() => refreshBtn.click());
+						const note = prompt('Leave a note about this wiki if you want?');
+						if (note === null) return;
+						serverReq({ op: 'create', note }).then(async (resp) => {
+							if (resp) {
+								refreshBtn.click();
+								const data = await resp.json();
+								if (data && data.token) {
+									window.open(new URL(data.token.slice(0, data.token.length / 2) + '/app.html?token=' + data.token, document.location).toString(), '_blank');
+								}
+							}
+						});
 					}
 					const upgradeAllBtn = document.getElementById('upgradeall');
 					upgradeAllBtn.onclick = () => {

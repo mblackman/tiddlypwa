@@ -2,3 +2,5 @@
 output/
 server/default_app/
 .netlify/
+
+.env
