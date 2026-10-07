@@ -1544,9 +1544,6 @@ Formatted with `deno fmt`.
 			for (const tid of changes) {
 				const { thash, iv, ct, sbiv, sbct, mtime, deleted, baseMtime } = tid;
 				if (arrayEq(thash, this.storyListHash)) continue;
-				if (mtime > newestChg) {
-					newestChg = mtime;
-				}
 				const b64hash = await b64enc(thash);
 				const tidjson = {
 					thash: b64hash,
@@ -1611,8 +1608,14 @@ Formatted with `deno fmt`.
 				if (syncTimeoutTimer) clearTimeout(syncTimeoutTimer);
 			}
 			const serverTimeHdr = resp.headers.get('x-server-time');
-			const { serverChanges, appEtag, conflicts } = respJson;
+			const { serverChanges, appEtag, conflicts, successes } = respJson;
 			const conflictSet = new Set(conflicts || []);
+			const successMap = new Map();
+			if (successes) {
+				for (const { thash, mtime } of successes) {
+					successMap.set(thash, new Date(mtime));
+				}
+			}
 			const toDecrypt = [];
 			const titleHashesToDelete = new Set();
 			const idbWrites = [];
@@ -1777,17 +1780,22 @@ Formatted with `deno fmt`.
 			const nonConflictedLocalHashes = [];
 			for (const [b64hash, tid] of localChangesByHash) {
 				if (!conflictSet.has(b64hash)) {
-					nonConflictedLocalHashes.push({ thash: tid.thash, newBaseMtime: tid.mtime });
+					const newBaseMtime = successMap.get(b64hash) || tid.mtime;
+					if (newBaseMtime > newestChg) newestChg = newBaseMtime;
+					nonConflictedLocalHashes.push({ thash: tid.thash, newBaseMtime, oldMtime: tid.mtime });
 				}
 			}
 			if (nonConflictedLocalHashes.length > 0) {
 				const txn = this.db.transaction('tiddlers', 'readwrite');
 				const store = txn.objectStore('tiddlers');
-				for (const { thash, newBaseMtime } of nonConflictedLocalHashes) {
+				for (const { thash, newBaseMtime, oldMtime } of nonConflictedLocalHashes) {
 					const getReq = store.get(thash);
 					getReq.onsuccess = () => {
 						const current = getReq.result;
 						if (current) {
+							if (current.mtime.getTime() === oldMtime.getTime()) {
+								current.mtime = newBaseMtime;
+							}
 							current.baseMtime = newBaseMtime;
 							store.put(current);
 						}
