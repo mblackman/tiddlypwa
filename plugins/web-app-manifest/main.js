@@ -55,6 +55,16 @@ Formatted with `deno fmt`.
 					'$:/plugins/mblackman/web-app-manifest/background-color',
 				),
 				icons: [],
+				share_target: {
+					action: location.pathname + "?share-target=1",
+					method: "GET",
+					enctype: "application/x-www-form-urlencoded",
+					params: {
+						title: "title",
+						text: "text",
+						url: "url"
+					}
+				}
 			};
 			const iconTids = $tw.wiki.getTiddlersWithTag('$:/tags/ManifestIcon');
 			if (iconTids.length == 0 && $tw.wiki.getTiddler('$:/favicon.ico')) {

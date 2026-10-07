@@ -43,7 +43,7 @@ async function fromNetCaching(req, cacheResp) {
 
 async function fromCache(evt) {
 	const cache = await caches.open(CACHE);
-	const response = await cache.match(evt.request);
+	const response = await cache.match(evt.request, { ignoreSearch: true });
 	if (response) {
 		evt.waitUntil(fromNetCaching(evt.request, response.clone()));
 		return response;
