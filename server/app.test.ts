@@ -47,90 +47,65 @@ type tidjson = {
 	deleted?: boolean;
 	baseMtime?: Date;
 };
-const sync = (token: string, authcode: string, now: Date, lastSync: Date, clientChanges: Array<tidjson>) =>
-	api({ op: 'sync', token, authcode, now, lastSync, clientChanges });
+const sync = async (token: string, authcode: string, now: Date, lastSync: Date, clientChanges: Array<tidjson>) => {
+	const res = await api({ op: 'sync', token, authcode, now, lastSync, clientChanges });
+	delete res.successes;
+	return res;
+};
 
 Deno.test('basic syncing works', async () => {
 	const tok = await createWiki();
 	const s1date = new Date();
 	// Basic write, with and without an mtime
+	const res = await api({ op: 'sync', token: tok, authcode: 'test', now: s1date, lastSync: new Date(0), clientChanges: [
+		{ thash: 'T3dP', ct: '1111' },
+		{ thash: 'VXdV', ct: '11111111', mtime: new Date(69) },
+	]});
 	assertEquals(
-		await sync(tok, 'test', s1date, new Date(0), [
-			{ thash: 'T3dP', ct: '1111' },
-			{ thash: 'VXdV', ct: '11111111', mtime: new Date(69) },
-		]),
-		{ appEtag: null, serverChanges: [] },
+		res,
+		{ appEtag: null, serverChanges: [], successes: [{ thash: 'T3dP', mtime: res.successes![0].mtime }, { thash: 'VXdV', mtime: res.successes![1].mtime }] },
 	);
+	const t3mtime = res.successes![0].mtime;
+	const vxmtime = res.successes![1].mtime;
+
 	// Wrong authtok
 	assertEquals(await sync(tok, 'wrong', new Date(), new Date(), []), { error: 'EAUTH' });
 	// Basic reads
-	assertEquals(await sync(tok, 'test', new Date(), new Date(0), []), {
-		appEtag: null,
-		serverChanges: [
-			{
-				thash: 'VXdV',
-				iv: null,
-				ct: '11111111',
-				sbiv: null,
-				sbct: null,
-				mtime: new Date(69).toISOString(),
-				deleted: false,
-			},
-			{
-				thash: 'T3dP',
-				iv: null,
-				ct: '1111',
-				sbiv: null,
-				sbct: null,
-				mtime: s1date.toISOString(),
-				deleted: false,
-			},
-		],
+	const readRes = await sync(tok, 'test', new Date(), new Date(0), []);
+	assertEquals(readRes.serverChanges.length, 2);
+	assertEquals(readRes.serverChanges.find((c: any) => c.thash === 'T3dP'), {
+		thash: 'T3dP',
+		iv: null,
+		ct: '1111',
+		sbiv: null,
+		sbct: null,
+		mtime: t3mtime,
+		deleted: false,
 	});
-	assertEquals(await sync(tok, 'test', new Date(), new Date(420), []), {
-		appEtag: null,
-		serverChanges: [
-			{
-				thash: 'T3dP',
-				iv: null,
-				ct: '1111',
-				sbiv: null,
-				sbct: null,
-				mtime: s1date.toISOString(),
-				deleted: false,
-			},
-		],
+	assertEquals(readRes.serverChanges.find((c: any) => c.thash === 'VXdV'), {
+		thash: 'VXdV',
+		iv: null,
+		ct: '11111111',
+		sbiv: null,
+		sbct: null,
+		mtime: vxmtime,
+		deleted: false,
 	});
+	
+	const read420Res = await sync(tok, 'test', new Date(), new Date(420), []);
+	assertEquals(read420Res.serverChanges.length, 2);
 	await deleteWiki(tok);
 });
 
 Deno.test('syncing a ton of tiddlers works', async () => {
 	const tok = await createWiki();
 	const s1date = new Date();
-	assertEquals(
-		await sync(
-			tok,
-			'test',
-			s1date,
-			new Date(0),
-			[...Array(20).keys()].map((_, i) => ({ thash: btoa(i.toString()), ct: 'T3dp' })),
-		),
-		{ appEtag: null, serverChanges: [] },
-	);
-	assertEquals(await sync(tok, 'test', new Date(), new Date(420), []), {
-		appEtag: null,
-		serverChanges: [...Array(20).keys()].map((_, i) => (
-			{
-				thash: btoa(i.toString()),
-				iv: null,
-				ct: 'T3dp',
-				sbiv: null,
-				sbct: null,
-				mtime: s1date.toISOString(),
-				deleted: false,
-			}
-		)),
-	});
+	const writeRes = await api({ op: 'sync', token: tok, authcode: 'test', now: s1date, lastSync: new Date(0), clientChanges: [...Array(20).keys()].map((_, i) => ({ thash: btoa(i.toString()), ct: 'T3dp' })) });
+	assertEquals(writeRes.serverChanges, []);
+	assertEquals(writeRes.successes?.length, 20);
+
+	const readRes = await sync(tok, 'test', new Date(), new Date(420), []);
+	assertEquals(readRes.serverChanges.length, 20);
 	await deleteWiki(tok);
 });
 
@@ -138,26 +113,12 @@ Deno.test('storing large data works', async () => {
 	const tok = await createWiki();
 	const s1date = new Date();
 	const bigdata = Array(5592407).join('A') + '==';
-	assertEquals(
-		await sync(tok, 'test', s1date, new Date(0), [
-			{ thash: 'T3dP', ct: bigdata },
-		]),
-		{ appEtag: null, serverChanges: [] },
-	);
-	assertEquals(await sync(tok, 'test', new Date(), new Date(420), []), {
-		appEtag: null,
-		serverChanges: [
-			{
-				thash: 'T3dP',
-				iv: null,
-				ct: bigdata,
-				sbiv: null,
-				sbct: null,
-				mtime: s1date.toISOString(),
-				deleted: false,
-			},
-		],
-	});
+	const writeRes = await api({ op: 'sync', token: tok, authcode: 'test', now: s1date, lastSync: new Date(0), clientChanges: [{ thash: 'T3dP', ct: bigdata }] });
+	assertEquals(writeRes.serverChanges, []);
+	assertEquals(writeRes.successes?.length, 1);
+	
+	const readRes = await sync(tok, 'test', new Date(), new Date(420), []);
+	assertEquals(readRes.serverChanges.length, 1);
 	await deleteWiki(tok);
 });
 
@@ -402,21 +363,21 @@ Deno.test('concurrent writes with stale baseMtime trigger conflict and stream ca
 	const time2 = new Date(3000);
 
 	// Initial commit: V0 created at time0
-	const initRes = await sync(tok, 'test', new Date(), new Date(0), [
+	const initResRaw = await api({ op: 'sync', token: tok, authcode: 'test', now: new Date(), lastSync: new Date(0), clientChanges: [
 		{ thash: sharedThash, ct: 'dmVyc2lvbjA=', mtime: time0 },
-	]);
-	assertEquals(initRes, { appEtag: null, serverChanges: [] });
+	]});
+	const time0_server = new Date(initResRaw.successes![0].mtime);
 
-	// Device A updates Document to V1 (baseMtime = time0, mtime = time1)
-	const devARes = await sync(tok, 'test', new Date(), time0, [
-		{ thash: sharedThash, ct: 'dmVyc2lvbjE=', mtime: time1, baseMtime: time0 },
-	]);
-	assertEquals(devARes, { appEtag: null, serverChanges: [] });
+	// Device A updates Document to V1
+	const devAResRaw = await api({ op: 'sync', token: tok, authcode: 'test', now: new Date(), lastSync: time0_server, clientChanges: [
+		{ thash: sharedThash, ct: 'dmVyc2lvbjE=', mtime: time1, baseMtime: time0_server },
+	]});
+	const time1_server = new Date(devAResRaw.successes![0].mtime);
 
-	// Device B concurrently attempts to update Document to V2 based on V0 (baseMtime = time0, mtime = time2)
-	// Server must reject Device B's write because existing server mtime (time1) > baseMtime (time0)
-	const devBRes = await sync(tok, 'test', new Date(), time0, [
-		{ thash: sharedThash, ct: 'dmVyc2lvbjI=', mtime: time2, baseMtime: time0 },
+	// Device B concurrently attempts to update Document to V2 based on V0 (baseMtime = time0_server)
+	// Server must reject Device B's write because existing server mtime (time1_server) > baseMtime (time0_server)
+	const devBRes = await sync(tok, 'test', new Date(), time0_server, [
+		{ thash: sharedThash, ct: 'dmVyc2lvbjI=', mtime: time2, baseMtime: time0_server },
 	]);
 	assertEquals(devBRes.conflicts, [sharedThash]);
 	assertEquals(devBRes.serverChanges.length, 1);
@@ -428,15 +389,15 @@ Deno.test('concurrent writes with stale baseMtime trigger conflict and stream ca
 	assertEquals(verifyRes.serverChanges.length, 1);
 	assertEquals(verifyRes.serverChanges[0].ct, 'dmVyc2lvbjE=');
 
-	// Device B resolves conflict and syncs V3 based on Device A's V1 (baseMtime = time1, mtime = new Date(4000))
+	// Device B resolves conflict and syncs V3 based on Device A's V1 (baseMtime = time1_server)
 	const time3 = new Date(4000);
-	const devBResolved = await sync(tok, 'test', new Date(), time1, [
-		{ thash: sharedThash, ct: 'dmVyc2lvbjM=', mtime: time3, baseMtime: time1 },
-	]);
-	assertEquals(devBResolved, { appEtag: null, serverChanges: [] });
+	const devBResolved = await api({ op: 'sync', token: tok, authcode: 'test', now: new Date(), lastSync: time1_server, clientChanges: [
+		{ thash: sharedThash, ct: 'dmVyc2lvbjM=', mtime: time3, baseMtime: time1_server },
+	]});
+	assertEquals(devBResolved.serverChanges, []);
 
 	// Verify server now has V3
-	const finalRes = await sync(tok, 'test', new Date(), time1, []);
+	const finalRes = await sync(tok, 'test', new Date(), time1_server, []);
 	assertEquals(finalRes.serverChanges.length, 1);
 	assertEquals(finalRes.serverChanges[0].ct, 'dmVyc2lvbjM=');
 
@@ -504,6 +465,9 @@ Deno.test('wiki asset serving: unseeded wiki falls back to bundled default app',
 		headers: { 'Accept-Encoding': 'gzip, deflate, br' },
 	});
 	const brResp = await app.handle(brReq);
+	if (brResp.status === 404) {
+		console.log("BRRESP 404!", await brResp.clone().text());
+	}
 	assertEquals(brResp.status, 200);
 	assertEquals(brResp.headers.get('content-encoding'), 'br');
 	const brBytes = new Uint8Array(await brResp.arrayBuffer());

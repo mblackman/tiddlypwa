@@ -8,7 +8,7 @@ const utfenc = new TextEncoder();
 const utfdec = new TextDecoder();
 
 // Helper to derive simulated client crypto keys
-async function createClientCrypto() {
+export async function createClientCrypto() {
 	const rawKey = new Uint8Array(32);
 	rawKey.fill(42);
 	const encKey = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
@@ -55,7 +55,7 @@ function getMonotonicTime(): Date {
 }
 
 // Simulated Client Device (modeling IndexedDB + PWAStorage sync logic)
-class SimulatedDevice {
+export class SimulatedDevice {
 	name: string;
 	crypto: any;
 	localDb: Map<string, any> = new Map(); // thashB64 -> local record
@@ -135,9 +135,7 @@ class SimulatedDevice {
 
 		for (const [thashB64, tid] of this.localDb) {
 			if (tid.mtime > this.lastSync) {
-				if (tid.mtime > newestChg) {
-					newestChg = tid.mtime;
-				}
+				// do not update newestChg to client mtime
 				const change = {
 					thash: thashB64,
 					iv: tid.iv ? encodeBase64(tid.iv) : null,
@@ -261,9 +259,16 @@ class SimulatedDevice {
 			if (remoteMtime > newestChg) newestChg = remoteMtime;
 		}
 
-		// Update baseMtime on non-conflicted local changes
-		for (const [thashB64, tid] of localChangesByHash) {
-			if (!conflictSet.has(thashB64)) {
+		const successes = data.successes || [];
+
+		// Update mtime and baseMtime on successful local changes
+		for (const success of successes) {
+			const thashB64 = success.thash;
+			const tid = this.localDb.get(thashB64);
+			if (tid && !conflictSet.has(thashB64)) {
+				const sTime = new Date(success.mtime);
+				if (sTime > newestChg) newestChg = sTime;
+				tid.mtime = sTime;
 				tid.baseMtime = tid.mtime;
 			}
 		}
