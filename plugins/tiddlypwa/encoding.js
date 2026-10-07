@@ -81,4 +81,19 @@ Formatted with `deno fmt`.
 		}
 		return isBin ? module.exports.b64enc(body) : utfdec.decode(body);
 	};
+
+	module.exports.decodeDataToBlob = async function (bin, mimeType) {
+		const dw = new DataView(bin);
+		const flags = dw.getUint8(0);
+		const isBin = flags & 1;
+		const isGzipped = flags & (1 << 1);
+		const bodylen = dw.getUint32(1);
+		const body = new Uint8Array(bin, 5, bodylen);
+		
+		if (isGzipped) {
+			throw new Error('unsupported binary encoding');
+		}
+		
+		return new Blob([body], { type: mimeType });
+	};
 })();

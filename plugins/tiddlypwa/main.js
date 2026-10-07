@@ -613,9 +613,21 @@ Formatted with `deno fmt`.
 			try {
 				const tid = await this.parseEncryptedTiddler(record);
 				if (record.sbiv && record.sbct) {
-					tid.text = await decodeData(
-						await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.sbiv }, this.enckey(record.thash), record.sbct),
-					);
+					const isBin = $tw.config.contentTypeInfo[tid.type]
+						? $tw.config.contentTypeInfo[tid.type].encoding === 'base64'
+						: false;
+						
+					if (isBin) {
+						const blob = await decodeDataToBlob(
+							await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.sbiv }, this.enckey(record.thash), record.sbct),
+							tid.type
+						);
+						tid._canonical_uri = URL.createObjectURL(blob);
+					} else {
+						tid.text = await decodeData(
+							await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.sbiv }, this.enckey(record.thash), record.sbct),
+						);
+					}
 				}
 				return tid;
 			} catch (e) {
@@ -1297,9 +1309,11 @@ Formatted with `deno fmt`.
 			const key = this.enckey(thash);
 			const isBin = this.wiki.isBinaryTiddler(tiddler.fields.title);
 			const isSepBody = tiddler.fields.text && (isBin || tiddler.fields.text.length > 256);
+			const isBlobUrl = tiddler.fields._canonical_uri && tiddler.fields._canonical_uri.startsWith('blob:');
 			const json = JSON.stringify(
 				Object.keys(tiddler.fields).reduce((o, k) => {
 					if (k === 'text' && isSepBody) return o;
+					if (k === '_canonical_uri' && isBlobUrl) return o;
 					o[k] = tiddler.getFieldString(k);
 					return o;
 				}, Object.create(null)),
@@ -1312,6 +1326,7 @@ Formatted with `deno fmt`.
 				await encodeData(json, false, 256),
 			);
 			let sbiv, sbct;
+			const existing = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').get(thash));
 			if (isSepBody) {
 				sbiv = crypto.getRandomValues(new Uint8Array(12));
 				sbct = await crypto.subtle.encrypt(
@@ -1319,8 +1334,10 @@ Formatted with `deno fmt`.
 					key,
 					await encodeData(tiddler.fields.text, isBin, 256),
 				);
+			} else if (isBlobUrl && existing) {
+				sbiv = existing.sbiv;
+				sbct = existing.sbct;
 			}
-			const existing = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').get(thash));
 			const baseMtime = existing ? (existing.baseMtime || existing.mtime) : null;
 			await adb(
 				this.db.transaction('tiddlers', 'readwrite').objectStore('tiddlers').put({
