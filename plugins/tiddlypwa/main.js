@@ -616,11 +616,11 @@ Formatted with `deno fmt`.
 					const isBin = $tw.config.contentTypeInfo[tid.type]
 						? $tw.config.contentTypeInfo[tid.type].encoding === 'base64'
 						: false;
-						
+
 					if (isBin) {
 						const blob = await decodeDataToBlob(
 							await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.sbiv }, this.enckey(record.thash), record.sbct),
-							tid.type
+							tid.type,
 						);
 						tid._canonical_uri = URL.createObjectURL(blob);
 					} else {
@@ -639,7 +639,7 @@ Formatted with `deno fmt`.
 		tiddlersAreEqual(a, b) {
 			if (!a || !b) return false;
 			if ((a.text || '') !== (b.text || '')) return false;
-			const ignored = new Set(['modified', 'created', 'revision']);
+			const ignored = new Set(['modified', 'created', 'revision', 'revision-tag', 'text']);
 			const keysA = Object.keys(a).filter((k) => !ignored.has(k));
 			const keysB = Object.keys(b).filter((k) => !ignored.has(k));
 			if (keysA.length !== keysB.length) return false;
@@ -1326,7 +1326,6 @@ Formatted with `deno fmt`.
 				await encodeData(json, false, 256),
 			);
 			let sbiv, sbct;
-			const existing = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').get(thash));
 			if (isSepBody) {
 				sbiv = crypto.getRandomValues(new Uint8Array(12));
 				sbct = await crypto.subtle.encrypt(
@@ -1334,23 +1333,41 @@ Formatted with `deno fmt`.
 					key,
 					await encodeData(tiddler.fields.text, isBin, 256),
 				);
-			} else if (isBlobUrl && existing) {
-				sbiv = existing.sbiv;
-				sbct = existing.sbct;
 			}
-			const baseMtime = existing ? (existing.baseMtime || existing.mtime) : null;
-			await adb(
-				this.db.transaction('tiddlers', 'readwrite').objectStore('tiddlers').put({
-					thash, // The title hash is the primary key
-					iv,
-					ct,
-					sbiv,
-					sbct,
-					mtime: new Date(), // Has to be unencrypted for sync conflict resolution
-					// also, *not* using the tiddler's modified field allows for importing tiddlers last modified in the past
-					baseMtime,
-				}),
-			);
+			await new Promise((resolve, reject) => {
+				const txn = this.db.transaction('tiddlers', 'readwrite');
+				const store = txn.objectStore('tiddlers');
+				const getReq = store.get(thash);
+				getReq.onsuccess = () => {
+					const existing = getReq.result;
+					let finalSbiv = sbiv;
+					let finalSbct = sbct;
+					if (!isSepBody && isBlobUrl && existing) {
+						finalSbiv = existing.sbiv;
+						finalSbct = existing.sbct;
+					}
+					const baseMtime = existing ? (existing.baseMtime !== undefined ? existing.baseMtime : existing.mtime) : null;
+					let minTime = Date.now();
+					if (baseMtime instanceof Date && baseMtime.getTime() >= minTime) {
+						minTime = baseMtime.getTime() + 1;
+					}
+					if (existing?.mtime instanceof Date && existing.mtime.getTime() >= minTime) {
+						minTime = existing.mtime.getTime() + 1;
+					}
+					store.put({
+						thash, // The title hash is the primary key
+						iv,
+						ct,
+						sbiv: finalSbiv,
+						sbct: finalSbct,
+						mtime: new Date(minTime), // Has to be unencrypted for sync conflict resolution
+						// also, *not* using the tiddler's modified field allows for importing tiddlers last modified in the past
+						baseMtime,
+					});
+				};
+				txn.oncomplete = () => resolve();
+				txn.onerror = () => reject(txn.error);
+			});
 			await this.reflectStorageInfo();
 		}
 
@@ -1413,20 +1430,34 @@ Formatted with `deno fmt`.
 
 		async _deleteTiddler(title) {
 			const thash = await this.titlehash(title);
-			const existing = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').get(thash));
-			const baseMtime = existing ? (existing.baseMtime || existing.mtime) : null;
-			await adb(
-				this.db.transaction('tiddlers', 'readwrite').objectStore('tiddlers').put({
-					thash,
-					iv: undefined,
-					ct: undefined,
-					sbiv: undefined,
-					sbct: undefined,
-					mtime: new Date(),
-					deleted: true,
-					baseMtime,
-				}),
-			);
+			await new Promise((resolve, reject) => {
+				const txn = this.db.transaction('tiddlers', 'readwrite');
+				const store = txn.objectStore('tiddlers');
+				const getReq = store.get(thash);
+				getReq.onsuccess = () => {
+					const existing = getReq.result;
+					const baseMtime = existing ? (existing.baseMtime !== undefined ? existing.baseMtime : existing.mtime) : null;
+					let minTime = Date.now();
+					if (baseMtime instanceof Date && baseMtime.getTime() >= minTime) {
+						minTime = baseMtime.getTime() + 1;
+					}
+					if (existing?.mtime instanceof Date && existing.mtime.getTime() >= minTime) {
+						minTime = existing.mtime.getTime() + 1;
+					}
+					store.put({
+						thash,
+						iv: undefined,
+						ct: undefined,
+						sbiv: undefined,
+						sbct: undefined,
+						mtime: new Date(minTime),
+						deleted: true,
+						baseMtime,
+					});
+				};
+				txn.oncomplete = () => resolve();
+				txn.onerror = () => reject(txn.error);
+			});
 			await this.reflectStorageInfo();
 		}
 
@@ -1554,7 +1585,12 @@ Formatted with `deno fmt`.
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWASyncingWith', text: url });
 			const changes = [];
 			const it = adbiter(this.db.transaction('tiddlers').objectStore('tiddlers').openCursor());
-			for await (const tid of it) if (all || tid.mtime > lastSync) changes.push(tid);
+			for await (const tid of it) {
+				const isDirty = tid.baseMtime === null ||
+					(tid.baseMtime instanceof Date && tid.mtime instanceof Date &&
+						tid.mtime.getTime() !== tid.baseMtime.getTime());
+				if (all || tid.mtime > lastSync || isDirty) changes.push(tid);
+			}
 			const clientChanges = [];
 			const localChangesByHash = new Map();
 			let newestChg = new Date(0);
@@ -1637,17 +1673,20 @@ Formatted with `deno fmt`.
 			const titleHashesToDelete = new Set();
 			const idbWrites = [];
 			const conflictTiddlersToAdd = [];
+			const conflictedTitlesInPass = new Set();
 
 			for (const { thash, iv, ct, sbiv, sbct, mtime, deleted } of serverChanges) {
 				const dhash = b64dec(thash);
 				if (!dhash || arrayEq(dhash, this.storyListHash)) continue;
+				const serverMtime = new Date(mtime);
 				const remotetid = {
 					thash: dhash.buffer,
 					ct: ct && b64dec(ct).buffer,
 					iv: iv && b64dec(iv).buffer,
 					sbct: sbct && b64dec(sbct).buffer,
 					sbiv: sbiv && b64dec(sbiv).buffer,
-					mtime: new Date(mtime),
+					mtime: serverMtime,
+					baseMtime: serverMtime,
 					deleted: !!deleted,
 				};
 				this.logger.log('remote change', thash);
@@ -1692,6 +1731,7 @@ Formatted with `deno fmt`.
 									conflictTiddlersToAdd.push(
 										this.createConflictTiddler(ourDecrypted, originalTitle, 'local', ourMtime),
 									);
+									conflictedTitlesInPass.add(originalTitle);
 								}
 								idbWrites.push(remotetid);
 								toDecrypt.push(remotetid);
@@ -1702,6 +1742,7 @@ Formatted with `deno fmt`.
 									conflictTiddlersToAdd.push(
 										this.createConflictTiddler(remoteDecrypted, originalTitle, 'remote', remotetid.mtime),
 									);
+									conflictedTitlesInPass.add(originalTitle);
 								}
 							}
 						}
@@ -1716,6 +1757,7 @@ Formatted with `deno fmt`.
 								conflictTiddlersToAdd.push(
 									this.createConflictTiddler(ourDecrypted, originalTitle, 'local', ourMtime),
 								);
+								conflictedTitlesInPass.add(originalTitle);
 							}
 							idbWrites.push(remotetid);
 							titleHashesToDelete.add(thash);
@@ -1739,6 +1781,7 @@ Formatted with `deno fmt`.
 								conflictTiddlersToAdd.push(
 									this.createConflictTiddler(remoteDecrypted, originalTitle, 'remote', remotetid.mtime),
 								);
+								conflictedTitlesInPass.add(originalTitle);
 							}
 						}
 					} else {
@@ -1766,6 +1809,7 @@ Formatted with `deno fmt`.
 
 			// Batch commit canonical updates to IndexedDB in one synchronous transaction.
 			// Use read-modify-write to avoid overwriting local edits made during the fetch.
+			const skippedByNewerLocalEdit = new Set();
 			if (idbWrites.length > 0) {
 				const txn = this.db.transaction('tiddlers', 'readwrite');
 				const store = txn.objectStore('tiddlers');
@@ -1774,12 +1818,20 @@ Formatted with `deno fmt`.
 					getReq.onsuccess = () => {
 						const current = getReq.result;
 						// If a local edit happened during the fetch, its mtime will be newer
-						// than what we snapshotted. Don't overwrite — it'll sync next cycle.
+						// than what we snapshotted. Don't overwrite content — it'll sync next cycle,
+						// but MUST advance baseMtime to the server's canonical mtime so the next
+						// sync doesn't repeatedly fail OCC with a stale baseMtime (snowball loop).
 						if (current && current.mtime instanceof Date) {
 							const snapshotEntry = localChangesByHash.get(
 								[...localChangesByHash.keys()].find((k) => arrayEq(localChangesByHash.get(k).thash, tid.thash)),
 							);
 							if (snapshotEntry && current.mtime.getTime() > snapshotEntry.mtime.getTime()) {
+								current.baseMtime = tid.mtime;
+								if (current.mtime.getTime() <= tid.mtime.getTime()) {
+									current.mtime = new Date(tid.mtime.getTime() + 1);
+								}
+								store.put(current);
+								skippedByNewerLocalEdit.add(tid);
 								return;
 							}
 						}
@@ -1812,6 +1864,8 @@ Formatted with `deno fmt`.
 						if (current) {
 							if (current.mtime.getTime() === oldMtime.getTime()) {
 								current.mtime = newBaseMtime;
+							} else if (current.mtime.getTime() <= newBaseMtime.getTime()) {
+								current.mtime = new Date(newBaseMtime.getTime() + 1);
 							}
 							current.baseMtime = newBaseMtime;
 							store.put(current);
@@ -1845,18 +1899,28 @@ Formatted with `deno fmt`.
 				}
 			}
 			for (const x of toDecrypt) {
+				if (skippedByNewerLocalEdit.has(x)) continue;
 				const tid = await this.parseEncryptedTiddler(x);
 				const title = tid?.title;
 				if (!title || isDraftTiddler(tid)) continue;
 				// isReady, so only go through the syncer mechanism here, even though that results in double decryption
 				if (title !== '$:/StoryList') {
-					const draftTitle = `Draft of '${title}'`;
-					if (this.wiki.tiddlerExists(draftTitle)) {
+					const draftTitle = this.wiki.findDraft?.(title) || `Draft of '${title}'`;
+					if (this.wiki.tiddlerExists(draftTitle) && !conflictedTitlesInPass.has(title)) {
+						const fullTid = (x.sbiv && x.sbct) ? ((await this.decryptRawTiddler(x)) || tid) : tid;
+						const baseTid = this.wiki.getTiddler(title);
+						const baseIsFull = baseTid && !baseTid.fields._is_skinny;
+						const changedVsBase = !baseIsFull || !this.tiddlersAreEqual(baseTid.fields, fullTid);
 						const draftTid = this.wiki.getTiddler(draftTitle);
 						const draftText = draftTid?.fields?.text || '';
-						const draftTags = draftTid?.fields?.tags || '';
-						if (draftText !== (tid.text || '') || draftTags !== (tid.tags || '')) {
-							const conflictTid = this.createConflictTiddler(tid, title, 'remote', x.mtime);
+						const draftTags = Array.isArray(draftTid?.fields?.tags)
+							? $tw.utils.stringifyList(draftTid.fields.tags)
+							: (draftTid?.fields?.tags || '');
+						const fullTags = Array.isArray(fullTid?.tags)
+							? $tw.utils.stringifyList(fullTid.tags)
+							: (fullTid?.tags || '');
+						if (changedVsBase && (draftText !== (fullTid.text || '') || draftTags !== fullTags)) {
+							const conflictTid = this.createConflictTiddler(fullTid, title, 'remote', x.mtime);
 							this.wiki.addTiddler(conflictTid);
 							this.wiki.addTiddler({
 								title: '$:/status/TiddlyPWAConflictsCount',

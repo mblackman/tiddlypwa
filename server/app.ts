@@ -50,7 +50,10 @@ function getWiki(error: string) {
 	};
 }
 
-const respHdrs = { 'access-control-allow-origin': '*' };
+const respHdrs = {
+	'access-control-allow-origin': '*',
+	'access-control-expose-headers': 'x-server-time',
+};
 
 function stripWeak(x: string | null) {
 	return x && (x.startsWith('W/') ? x.slice(2) : x);
@@ -100,7 +103,7 @@ export class TiddlyPWASyncApp {
 				const body = await Deno.readFile(`${dir}/${name}.br`);
 				this.defaultAppFiles.set(name, { etag: meta.etag, rawsize: meta.rawsize, ctype: meta.ctype, body });
 			} catch (e) {
-				console.error("Failed to load default app file:", name, e);
+				console.error('Failed to load default app file:', name, e);
 				// Default app files not available — new wikis will 404 until app is uploaded
 			}
 		}

@@ -88,18 +88,29 @@ export class SimulatedDevice {
 		}
 		const thash = await this.crypto.titleHash(title);
 		const thashB64 = encodeBase64(thash);
+		const payload: Record<string, unknown> = { ...(fields || {}), title, text };
+		const { iv, ct } = await this.crypto.encrypt(payload);
+
+		// Synchronous read-modify-write (matching fixed _saveTiddler in main.js)
 		const existing = this.localDb.get(thashB64);
-		const baseMtime = existing ? (existing.baseMtime || existing.mtime) : null;
-		const { iv, ct } = await this.crypto.encrypt({ title, text });
+		const baseMtime = existing ? (existing.baseMtime !== undefined ? existing.baseMtime : existing.mtime) : null;
+		let mtime = getMonotonicTime();
+		if (baseMtime instanceof Date && mtime.getTime() <= baseMtime.getTime()) {
+			mtime = new Date(baseMtime.getTime() + 1);
+		}
+		if (existing?.mtime instanceof Date && mtime.getTime() <= existing.mtime.getTime()) {
+			mtime = new Date(existing.mtime.getTime() + 1);
+		}
 
 		const record = {
 			title,
 			text,
+			fields: fields || {},
 			thash,
 			thashB64,
 			iv,
 			ct,
-			mtime: getMonotonicTime(),
+			mtime,
 			baseMtime,
 			deleted: false,
 		};
@@ -113,7 +124,14 @@ export class SimulatedDevice {
 		const thash = await this.crypto.titleHash(title);
 		const thashB64 = encodeBase64(thash);
 		const existing = this.localDb.get(thashB64);
-		const baseMtime = existing ? (existing.baseMtime || existing.mtime) : null;
+		const baseMtime = existing ? (existing.baseMtime !== undefined ? existing.baseMtime : existing.mtime) : null;
+		let mtime = getMonotonicTime();
+		if (baseMtime instanceof Date && mtime.getTime() <= baseMtime.getTime()) {
+			mtime = new Date(baseMtime.getTime() + 1);
+		}
+		if (existing?.mtime instanceof Date && mtime.getTime() <= existing.mtime.getTime()) {
+			mtime = new Date(existing.mtime.getTime() + 1);
+		}
 
 		const record = {
 			title,
@@ -121,21 +139,24 @@ export class SimulatedDevice {
 			thashB64,
 			iv: null,
 			ct: null,
-			mtime: getMonotonicTime(),
+			mtime,
 			baseMtime,
 			deleted: true,
 		};
 		this.localDb.set(thashB64, record);
 	}
 
-	async sync(app: TiddlyPWASyncApp, token: string) {
+	async sync(app: TiddlyPWASyncApp, token: string, duringFetch?: () => Promise<void>) {
 		const clientChanges: any[] = [];
 		const localChangesByHash = new Map<string, any>();
 		let newestChg = this.lastSync;
 
 		for (const [thashB64, tid] of this.localDb) {
-			if (tid.mtime > this.lastSync) {
-				// do not update newestChg to client mtime
+			const isDirty = tid.baseMtime === null ||
+				(tid.baseMtime instanceof Date && tid.mtime instanceof Date && tid.mtime.getTime() !== tid.baseMtime.getTime());
+			if (tid.mtime > this.lastSync || isDirty) {
+				// Snapshot the local entry at the start of sync
+				localChangesByHash.set(thashB64, { ...tid });
 				const change = {
 					thash: thashB64,
 					iv: tid.iv ? encodeBase64(tid.iv) : null,
@@ -145,7 +166,6 @@ export class SimulatedDevice {
 					deleted: tid.deleted,
 				};
 				clientChanges.push(change);
-				localChangesByHash.set(thashB64, tid);
 			}
 		}
 
@@ -164,10 +184,14 @@ export class SimulatedDevice {
 		});
 
 		const resp = await app.handle(req);
+		if (duringFetch) {
+			await duringFetch();
+		}
 		const serverTimeHdr = resp.headers.get('x-server-time');
 		const data = await resp.json();
 		const serverChanges = data.serverChanges || [];
 		const conflictSet = new Set<string>(data.conflicts || []);
+		const idbWrites: any[] = [];
 
 		for (const serverTid of serverChanges) {
 			const thashB64 = serverTid.thash;
@@ -182,13 +206,16 @@ export class SimulatedDevice {
 					: null;
 
 				// Check payload equality
-				const isEqual = ourDecrypted && remoteDecrypted && ourDecrypted.text === remoteDecrypted.text;
+				const isEqual = ourDecrypted && remoteDecrypted &&
+					(ourDecrypted.text || '') === (remoteDecrypted.text || '') &&
+					(ourDecrypted.highlight || '') === (remoteDecrypted.highlight || '');
 
 				if (isEqual) {
 					// False conflict suppressed
-					this.localDb.set(thashB64, {
+					idbWrites.push({
 						title: remoteDecrypted.title,
 						text: remoteDecrypted.text,
+						fields: remoteDecrypted,
 						thash: decodeBase64(thashB64),
 						thashB64,
 						iv: decodeBase64(serverTid.iv),
@@ -201,13 +228,19 @@ export class SimulatedDevice {
 					// Concurrency conflict! Server canonical is applied, local edit preserved as conflict tiddler
 					if (ourDecrypted) {
 						const conflictTitle = `${ourDecrypted.title} (Conflict ${ourMtime(ourtid.mtime)})`;
-						await this.saveTiddler(conflictTitle, ourDecrypted.text);
-						this.conflictTiddlers.push({ title: conflictTitle, of: ourDecrypted.title, text: ourDecrypted.text });
+						await this.saveTiddler(conflictTitle, ourDecrypted.text as string, ourDecrypted);
+						this.conflictTiddlers.push({
+							title: conflictTitle,
+							of: ourDecrypted.title,
+							text: ourDecrypted.text,
+							fields: ourDecrypted,
+						});
 					}
 					if (remoteDecrypted) {
-						this.localDb.set(thashB64, {
+						idbWrites.push({
 							title: remoteDecrypted.title,
 							text: remoteDecrypted.text,
+							fields: remoteDecrypted,
 							thash: decodeBase64(thashB64),
 							thashB64,
 							iv: decodeBase64(serverTid.iv),
@@ -224,8 +257,8 @@ export class SimulatedDevice {
 					this.localDb.delete(thashB64);
 				} else {
 					const remoteDecrypted = await this.crypto.decrypt(decodeBase64(serverTid.iv), decodeBase64(serverTid.ct));
-					const title = remoteDecrypted ? remoteDecrypted.title : 'Untitled';
-					const text = remoteDecrypted ? remoteDecrypted.text : '';
+					const title = remoteDecrypted ? (remoteDecrypted.title as string) : 'Untitled';
+					const text = remoteDecrypted ? (remoteDecrypted.text as string) : '';
 
 					if (this.activeDrafts.has(title)) {
 						const draftText = this.activeDrafts.get(title) || '';
@@ -242,9 +275,10 @@ export class SimulatedDevice {
 						}
 					}
 
-					this.localDb.set(thashB64, {
+					idbWrites.push({
 						title,
 						text,
+						fields: remoteDecrypted || {},
 						thash: decodeBase64(thashB64),
 						thashB64,
 						iv: decodeBase64(serverTid.iv),
@@ -259,17 +293,40 @@ export class SimulatedDevice {
 			if (remoteMtime > newestChg) newestChg = remoteMtime;
 		}
 
+		// Commit idbWrites with read-modify-write (matching fixed _syncOneUnlocked in main.js)
+		for (const tid of idbWrites) {
+			const current = this.localDb.get(tid.thashB64);
+			if (current && current.mtime instanceof Date) {
+				const snapshotEntry = localChangesByHash.get(tid.thashB64);
+				if (snapshotEntry && current.mtime.getTime() > snapshotEntry.mtime.getTime()) {
+					current.baseMtime = tid.mtime;
+					if (current.mtime.getTime() <= tid.mtime.getTime()) {
+						current.mtime = new Date(tid.mtime.getTime() + 1);
+					}
+					this.localDb.set(tid.thashB64, current);
+					continue;
+				}
+			}
+			this.localDb.set(tid.thashB64, tid);
+		}
+
 		const successes = data.successes || [];
 
 		// Update mtime and baseMtime on successful local changes
 		for (const success of successes) {
 			const thashB64 = success.thash;
-			const tid = this.localDb.get(thashB64);
-			if (tid && !conflictSet.has(thashB64)) {
-				const sTime = new Date(success.mtime);
-				if (sTime > newestChg) newestChg = sTime;
-				tid.mtime = sTime;
-				tid.baseMtime = tid.mtime;
+			const current = this.localDb.get(thashB64);
+			const snapshotEntry = localChangesByHash.get(thashB64);
+			if (current && snapshotEntry && !conflictSet.has(thashB64)) {
+				const newBaseMtime = new Date(success.mtime);
+				if (newBaseMtime > newestChg) newestChg = newBaseMtime;
+				if (current.mtime.getTime() === snapshotEntry.mtime.getTime()) {
+					current.mtime = newBaseMtime;
+				} else if (current.mtime.getTime() <= newBaseMtime.getTime()) {
+					current.mtime = new Date(newBaseMtime.getTime() + 1);
+				}
+				current.baseMtime = newBaseMtime;
+				this.localDb.set(thashB64, current);
 			}
 		}
 
@@ -597,6 +654,125 @@ Deno.test('Draft collision: Remote update preserves conflict copy when local dra
 	await bob.sync(app, tok);
 	const bobFinal = [...bob.localDb.values()].find((t) => t.title === 'MeetingNotes');
 	assertEquals(bobFinal.text, 'Alice finished version');
+
+	db.deleteWiki(tok);
+});
+
+Deno.test('Single-Device Live Field Typing: Rapid consecutive saves and in-flight edits do not self-conflict', async () => {
+	const db = new SQLiteDatastore();
+	const app = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const crypto = await createClientCrypto();
+	const tok = 'test-token-live-typing';
+	db.createWiki(tok);
+
+	const phone = new SimulatedDevice('Android Phone', crypto);
+
+	// 1. User creates a new journal tiddler and types multiple keystrokes into a live <$edit-text>
+	// field BEFORE the first sync even begins. baseMtime must remain null!
+	await phone.saveTiddler('2026-10-16', '', { highlight: 'Built a new' });
+	await phone.saveTiddler('2026-10-16', '', { highlight: 'Built a new Tiddlywiki plugin' });
+	const beforeFirstSync = [...phone.localDb.values()].find((t) => t.title === '2026-10-16');
+	assertEquals(beforeFirstSync.baseMtime, null);
+
+	// 2. While Sync #1 is in-flight over the network, user keeps typing into <$edit-text>:
+	const sync1 = await phone.sync(app, tok, async () => {
+		await phone.saveTiddler('2026-10-16', '', {
+			highlight: 'Built a new Tiddlywiki plugin to modernize the layout for n',
+		});
+	});
+	assertEquals(sync1.conflicts.length, 0);
+	assertEquals(phone.conflictTiddlers.length, 0);
+
+	// 3. While Sync #2 is in-flight, user keeps typing:
+	const sync2 = await phone.sync(app, tok, async () => {
+		await phone.saveTiddler('2026-10-16', '', {
+			highlight: 'Built a new Tiddlywiki plugin to modernize the layout for mov',
+		});
+	});
+	assertEquals(sync2.conflicts.length, 0);
+	assertEquals(phone.conflictTiddlers.length, 0);
+
+	// 4. Final sync settles the latest keystroke cleanly
+	const sync3 = await phone.sync(app, tok);
+	assertEquals(sync3.conflicts.length, 0);
+	assertEquals(phone.conflictTiddlers.length, 0);
+
+	const finalTid = [...phone.localDb.values()].find((t) => t.title === '2026-10-16');
+	assertEquals(finalTid.fields.highlight, 'Built a new Tiddlywiki plugin to modernize the layout for mov');
+
+	db.deleteWiki(tok);
+});
+
+Deno.test('Conflict Snowball Prevention: In-flight typing during a conflict advances baseMtime so subsequent syncs succeed cleanly', async () => {
+	const db = new SQLiteDatastore();
+	const app = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const crypto = await createClientCrypto();
+	const tok = 'test-token-snowball-prevention';
+	db.createWiki(tok);
+
+	const laptop = new SimulatedDevice('Laptop', crypto);
+	const phone = new SimulatedDevice('Phone', crypto);
+
+	// 1. Initial state synced to both devices
+	await laptop.saveTiddler('2026-10-16', '', { highlight: 'Initial highlight' });
+	await laptop.sync(app, tok);
+	await phone.sync(app, tok);
+
+	// 2. Laptop updates the tiddler and syncs to server
+	await laptop.saveTiddler('2026-10-16', '', { highlight: 'Laptop highlight update' });
+	await laptop.sync(app, tok);
+
+	// 3. Phone starts typing with stale baseMtime, and continues typing DURING the sync that hits OCC conflict!
+	await phone.saveTiddler('2026-10-16', '', {
+		highlight: 'Built a new Tiddlywiki plugin to modernize the layout for n',
+	});
+	const conflictSync = await phone.sync(app, tok, async () => {
+		// User types more characters while the conflicting sync is in flight!
+		await phone.saveTiddler('2026-10-16', '', {
+			highlight: 'Built a new Tiddlywiki plugin to modernize the layout for mov',
+		});
+	});
+	assertEquals(conflictSync.conflicts.length, 1);
+	assertEquals(phone.conflictTiddlers.length, 1);
+
+	// 4. User continues typing across subsequent sync cycles (22:12:07, 22:12:09, 22:12:10).
+	// Because idbWrites advanced current.baseMtime to the server's canonical mtime,
+	// none of the subsequent syncs conflict or snowball!
+	const nextSync1 = await phone.sync(app, tok, async () => {
+		await phone.saveTiddler('2026-10-16', '', {
+			highlight: 'Built a new Tiddlywiki plugin to modernize the layout for mobile and d',
+		});
+	});
+	assertEquals(nextSync1.conflicts.length, 0);
+	assertEquals(phone.conflictTiddlers.length, 1); // Still only 1 conflict tiddler!
+
+	const nextSync2 = await phone.sync(app, tok, async () => {
+		await phone.saveTiddler('2026-10-16', '', {
+			highlight: 'Built a new Tiddlywiki plugin to modernize the layout for mobile and desktop',
+		});
+	});
+	assertEquals(nextSync2.conflicts.length, 0);
+	assertEquals(phone.conflictTiddlers.length, 1);
+
+	const finalSync = await phone.sync(app, tok);
+	assertEquals(finalSync.conflicts.length, 0);
+	assertEquals(phone.conflictTiddlers.length, 1);
+
+	// Verify the latest typed text is synced to the server and received by laptop
+	await laptop.sync(app, tok);
+	const laptopFinal = [...laptop.localDb.values()].find((t) => t.title === '2026-10-16');
+	assertEquals(
+		laptopFinal.fields.highlight,
+		'Built a new Tiddlywiki plugin to modernize the layout for mobile and desktop',
+	);
 
 	db.deleteWiki(tok);
 });
