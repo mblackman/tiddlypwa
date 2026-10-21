@@ -25,6 +25,28 @@ Formatted with `deno fmt`.
 	$tw.utils.extractVersionInfo = () => $tw.wiki.getTiddler('$:/core').fields.version;
 	Object.defineProperty($tw, 'version', { get: $tw.utils.extractVersionInfo });
 
+	// Allow re-importing/updating a plugin with the same version number during drag&drop imports,
+	// while still suppressing older versions.
+	if ($tw.modules?.titles?.['$:/core/modules/upgraders/plugins.js']) {
+		try {
+			const pluginUpgrader = require('$:/core/modules/upgraders/plugins.js');
+			const origUpgrade = pluginUpgrader.upgrade;
+			if (typeof origUpgrade === 'function') {
+				pluginUpgrader.upgrade = function (wiki, titles, tiddlers) {
+					const origCheckVersions = $tw.utils.checkVersions;
+					$tw.utils.checkVersions = (vA, vB) => $tw.utils.compareVersions(vA, vB) === 1;
+					try {
+						return origUpgrade.call(this, wiki, titles, tiddlers);
+					} finally {
+						$tw.utils.checkVersions = origCheckVersions;
+					}
+				};
+			}
+		} catch (e) {
+			console.warn('Could not patch plugin upgrader:', e);
+		}
+	}
+
 	// Patch this to direct all actual plugins into the app wiki saving process,
 	// while ignoring internal pseudo-plugins ($:/temp/info-plugin) and import payloads.
 	const origDoesPluginRequireReload = $tw.wiki.doesPluginRequireReload;
@@ -76,7 +98,9 @@ Formatted with `deno fmt`.
 	};
 
 	const utfenc = new TextEncoder('utf-8');
-	const { b64enc, b64dec, encodeData, decodeData } = require('$:/plugins/mblackman/tiddlypwa/encoding.js');
+	const { b64enc, b64urlEnc, b64dec, encodeData, decodeData, decodeDataToBlob } = require(
+		'$:/plugins/mblackman/tiddlypwa/encoding.js',
+	);
 	const { BootstrapModal } = require('$:/plugins/mblackman/tiddlypwa/bootstrap.js');
 
 	function adb(req) {
@@ -126,7 +150,12 @@ Formatted with `deno fmt`.
 	}
 
 	function isCurrentUrl(url) {
-		return url === `${location.origin}${location.pathname}${location.search}`;
+		try {
+			const u = new URL(url, location.origin);
+			return u.origin === location.origin && u.pathname === location.pathname;
+		} catch (_e) {
+			return url === `${location.origin}${location.pathname}${location.search}`;
+		}
 	}
 
 	const knownFields = new Set(['created', 'creator', 'modified', 'modifier', 'tags', 'text', 'title', 'type', 'uri']);
@@ -432,11 +461,19 @@ Formatted with `deno fmt`.
 				this.uploadAppWiki(evt.paramObject);
 			});
 
+			// Override core's tm-browser-refresh listener so any core refresh buttons or shortcuts
+			// reload through the Service Worker instead of calling location.reload(true).
+			$tw.rootWidget.addEventListener('tm-browser-refresh', (_evt) => {
+				location.reload();
+				return false;
+			});
+
 			$tw.rootWidget.addEventListener('tiddlypwa-browser-refresh', (_evt) => {
 				location.reload(); // tm-browser-refresh passes 'true' which skips the serviceworker. silly!
 			});
 
 			$tw.rootWidget.addEventListener('tiddlypwa-browser-refresh-force', (_evt) => {
+				this.appWikiDirty = false;
 				$tw.syncer.isDirty = () => false; // skip the onbeforeunload
 				location.reload(); // tm-browser-refresh passes 'true' which skips the serviceworker. silly!
 			});
@@ -1387,7 +1424,12 @@ Formatted with `deno fmt`.
 				(tiddler.fields.type === 'application/json' && tiddler.fields['plugin-type']) ||
 				(tiddler.fields.type === 'application/javascript' && tiddler.fields['module-type'])
 			) {
-				$tw.syncer.isDirty = () => true; // make the UI insist on a save which would be the app save
+				if (!this.origSyncerIsDirty && $tw.syncer) {
+					const origIsDirty = $tw.syncer.isDirty.bind($tw.syncer);
+					this.origSyncerIsDirty = origIsDirty;
+					$tw.syncer.isDirty = () => this.appWikiDirty || origIsDirty();
+				}
+				this.appWikiDirty = true; // make the UI insist on a save which would be the app save
 				return cb(null, '', 1);
 			}
 			this._saveTiddler(tiddler).then((_) => {
@@ -1480,7 +1522,7 @@ Formatted with `deno fmt`.
 			});
 		}
 
-		async uploadAppWiki(variables) {
+		async uploadAppWiki(variables = {}) {
 			if (!this.wiki.getTiddler('$:/core') || !this.wiki.getTiddler('$:/plugins/mblackman/tiddlypwa')) {
 				this.logger.alert(
 					'You have deleted the TiddlyPWA plugin and tried to save the app HTML to the server! Refusing to self-destruct.',
@@ -1489,10 +1531,23 @@ Formatted with `deno fmt`.
 			}
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAUploadResult', text: 'Upload in progress.' });
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAUploading', text: 'yes' });
+			// Unpack any newly imported or updated plugins so their shadow tiddlers (such as sw.js and app-filter)
+			// are up to date before rendering the app wiki and service worker.
+			try {
+				this.wiki.readPluginInfo();
+				this.wiki.registerPluginTiddlers();
+				this.wiki.unpackPluginTiddlers();
+			} catch (e) {
+				console.warn('Failed to unpack plugin tiddlers before app wiki render:', e);
+			}
+			const effectiveVars = {
+				...variables,
+				publishFilter: variables.publishFilter || this.wiki.getTiddlerText('$:/plugins/mblackman/tiddlypwa/app-filter'),
+			};
 			const apphtml = $tw.wiki.renderTiddler(
 				'text/plain',
 				$tw.wiki.getTiddlerText('$:/config/SaveWikiButton/Template', '$:/core/save/all'),
-				{ variables },
+				{ variables: effectiveVars },
 			);
 			const swjs = $tw.wiki.renderTiddler('text/plain', '$:/plugins/mblackman/tiddlypwa/sw.js', {});
 			try {
@@ -1528,6 +1583,7 @@ Formatted with `deno fmt`.
 					return [url, resp];
 				}));
 				const urls = [];
+				let uploadedCurrent = false;
 				for (const [url, resp] of resps) {
 					if (!resp.ok) {
 						try {
@@ -1544,26 +1600,32 @@ Formatted with `deno fmt`.
 						href + (isCurrent ? ' {{$:/plugins/mblackman/tiddlypwa/cur-page-reload}}' : ''),
 					);
 					if (isCurrent) {
+						uploadedCurrent = true;
 						// This makes sure we instantly reload into the new version!
 						// The ServiceWorker will refetch from the server in the background again,
 						// so this should not cause any trouble. E.g. a concurrent update that
 						// happened in between upload and refresh would arrive as a new refresh prompt.
-						// The ETag is generated in a way that matches the reference server (assuming Brotli is working).
+						// The ETag is generated using Base64URL to match the reference server (assuming Brotli is working).
 						// If the ETag is different, sync will notice the mismatch and request the worker to reload.
 						try {
+							const etag = `"${await b64urlEnc(await crypto.subtle.digest('SHA-1', utfenc.encode(apphtml)))}-b"`;
+							const makeResp = () =>
+								new Response(apphtml, {
+									headers: {
+										'content-type': 'text/html;charset=utf-8',
+										etag,
+									},
+								});
 							const cache = await caches.open('tiddlypwa');
+							let matchedAny = false;
 							for (const req of await cache.keys()) {
-								if (req.url === href) {
-									cache.put(
-										req,
-										new Response(apphtml, {
-											headers: {
-												'content-type': 'text/html;charset=utf-8',
-												'etag': `"${await b64enc(await crypto.subtle.digest('SHA-1', utfenc.encode(apphtml)))}-b"`,
-											},
-										}),
-									);
+								if (isCurrentUrl(req.url)) {
+									await cache.put(req, makeResp());
+									matchedAny = true;
 								}
+							}
+							if (!matchedAny) {
+								await cache.put(href, makeResp());
 							}
 						} catch (e) {
 							this.logger.alert('Failed to update local cache!');
@@ -1572,6 +1634,14 @@ Formatted with `deno fmt`.
 					}
 				}
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWAUploadResult', text: 'Uploaded:\n\n* ' + urls.join('\n* ') });
+				if (uploadedCurrent) {
+					this.appWikiDirty = false;
+					$tw.syncer?.updateDirtyStatus?.();
+					if (variables.autoReload === 'yes') {
+						$tw.syncer.isDirty = () => false;
+						location.reload();
+					}
+				}
 			} catch (e) {
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWAUploadResult', text: 'Upload error: ' + e });
 				console.error(e);
@@ -1937,12 +2007,13 @@ Formatted with `deno fmt`.
 				}
 			}
 			if (appEtag && navigator.serviceWorker.controller) {
+				const stripWeak = (x) => x && (x.startsWith('W/') ? x.slice(2) : x);
 				const cache = await caches.open('tiddlypwa');
 				for (const req of await cache.keys()) {
 					if (!isCurrentUrl(req.url)) continue;
 					const resp = await cache.match(req);
-					const cachedEtag = resp.headers.get('etag');
-					if (!cachedEtag || cachedEtag === appEtag) continue;
+					const cachedEtag = stripWeak(resp?.headers?.get('etag'));
+					if (!cachedEtag || cachedEtag === stripWeak(appEtag)) continue;
 					navigator.serviceWorker.controller.postMessage({ op: 'update', url: req.url });
 				}
 			}

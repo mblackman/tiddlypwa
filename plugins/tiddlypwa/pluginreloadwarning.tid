@@ -1,0 +1,38 @@
+title: $:/core/ui/PageTemplate/pluginreloadwarning
+tags: $:/tags/PageTemplate
+
+\define lingo-base() $:/language/
+
+<$list filter="[{$:/status/RequireReloadDueToPluginChange}match[yes]]">
+
+<$reveal type="nomatch" state="$:/temp/HidePluginWarning" text="yes">
+
+<div class="tc-plugin-reload-warning" role="alert" style="z-index: 5000">
+
+<$set name="tv-config-toolbar-class" value="">
+
+<$reveal type="gt" state="$:/status/TiddlyPWAServerCount" text="0">
+<$reveal type="match" state="$:/isEncrypted" text="yes">
+<<lingo PluginReloadWarning>> <$button set="$:/temp/HidePluginWarning" setTo="yes" class="tc-btn-invisible">{{$:/core/images/close-button}}</$button>
+</$reveal>
+<$reveal type="nomatch" state="$:/isEncrypted" text="yes">
+<$reveal type="match" state="$:/status/TiddlyPWAUploading" text="yes">
+Uploading updated app wiki to sync server…
+</$reveal>
+<$reveal type="nomatch" state="$:/status/TiddlyPWAUploading" text="yes">
+To apply plugin or theme changes, <$button><$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/mblackman/tiddlypwa/app-filter}} autoReload="yes"/>upload &amp; reload now</$button> (or open {{$:/core/ui/Buttons/save-wiki}}). <$button set="$:/temp/HidePluginWarning" setTo="yes" class="tc-btn-invisible">{{$:/core/images/close-button}}</$button>
+</$reveal>
+</$reveal>
+</$reveal>
+
+<$reveal type="lteq" state="$:/status/TiddlyPWAServerCount" text="0">
+<<lingo PluginReloadWarning>> <$button set="$:/temp/HidePluginWarning" setTo="yes" class="tc-btn-invisible">{{$:/core/images/close-button}}</$button>
+</$reveal>
+
+</$set>
+
+</div>
+
+</$reveal>
+
+</$list>

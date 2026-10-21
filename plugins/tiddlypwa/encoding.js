@@ -28,6 +28,12 @@ Formatted with `deno fmt`.
 		})).split(',', 2)[1];
 	};
 
+	module.exports.b64urlEnc = async function (data) {
+		const b64 = await module.exports.b64enc(data);
+		if (!b64) return null;
+		return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+	};
+
 	module.exports.b64dec = function (base64) {
 		return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 	};
@@ -89,11 +95,11 @@ Formatted with `deno fmt`.
 		const isGzipped = flags & (1 << 1);
 		const bodylen = dw.getUint32(1);
 		const body = new Uint8Array(bin, 5, bodylen);
-		
+
 		if (isGzipped) {
 			throw new Error('unsupported binary encoding');
 		}
-		
+
 		return new Blob([body], { type: mimeType });
 	};
 })();

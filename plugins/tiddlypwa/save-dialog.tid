@@ -21,8 +21,13 @@ But first, disable single-file encryption: {{$:/core/ui/Buttons/encryption}}!
 <$reveal type="nomatch" state="$:/isEncrypted" text="yes">
 <$reveal type="nomatch" state="$:/status/TiddlyPWAUploading" text="yes">
 <$button>
+<$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/mblackman/tiddlypwa/app-filter}} autoReload="yes" />
+Upload &amp; reload
+</$button>
+or
+<$button>
 <$action-sendmessage $message="tiddlypwa-upload-app-wiki" publishFilter={{$:/plugins/mblackman/tiddlypwa/app-filter}} />
-Upload it to sync servers
+Upload to sync servers
 </$button>!
 </$reveal>
 </$reveal>

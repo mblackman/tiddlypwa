@@ -9,6 +9,10 @@ Formatted with `deno fmt`.
 /// <reference types="npm:@types/serviceworker" />
 const CACHE = 'tiddlypwa';
 
+function stripWeakEtag(x) {
+	return x && (x.startsWith('W/') ? x.slice(2) : x);
+}
+
 async function fromNetCaching(req, cacheResp) {
 	try {
 		// "preflight" for letting the server wake up if it's on a free service that suspends instances:
@@ -23,8 +27,8 @@ async function fromNetCaching(req, cacheResp) {
 			) {
 				return cacheResp || response;
 			}
-			const etagNew = response.headers.get('etag');
-			const etagOld = cacheResp ? cacheResp.headers.get('etag') : null;
+			const etagNew = stripWeakEtag(response.headers.get('etag'));
+			const etagOld = cacheResp ? stripWeakEtag(cacheResp.headers.get('etag')) : null;
 			const changed = cacheResp && etagNew && etagOld && etagNew !== etagOld;
 			const cache = await caches.open(CACHE);
 			await cache.put(req, response.clone());
