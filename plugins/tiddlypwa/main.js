@@ -1010,7 +1010,8 @@ Formatted with `deno fmt`.
 
 				const filter = ruleTiddler.fields.filter;
 				if (typeof filter !== 'string' || !filter.trim()) continue;
-				const dateField = ruleTiddler.fields['date-field'] || 'due-date';
+				const ruleId = ruleTiddler.fields['rule-id'] || ruleTitle;
+				const dateField = ruleTiddler.fields['date-field'] || 'due';
 				const defaultTime = ruleTiddler.fields['default-time'] || '09:00';
 				const offsetMinutes = Number(ruleTiddler.fields['offset-minutes'] || 0);
 				const titleTemplate = ruleTiddler.fields['notify-title'] || ruleTiddler.fields['title-template'] ||
@@ -1021,6 +1022,17 @@ Formatted with `deno fmt`.
 				const openUrlTemplate = ruleTiddler.fields['open-url'];
 				const urlField = ruleTiddler.fields['url-field'];
 				const clickAction = ruleTiddler.fields['click-action'];
+				let ruleActions;
+				const rawRuleActions = ruleTiddler.fields['actions-json'] ?? ruleTiddler.fields.actions;
+				if (typeof rawRuleActions === 'string' && rawRuleActions.trim()) {
+					try {
+						const parsed = JSON.parse(rawRuleActions);
+						if (Array.isArray(parsed)) ruleActions = parsed;
+					} catch (_e) {
+						// Ignore invalid JSON actions
+					}
+				}
+				const actionsSig = ruleActions ? JSON.stringify(ruleActions) : '';
 
 				let matchedTitles = [];
 				try {
@@ -1077,12 +1089,12 @@ Formatted with `deno fmt`.
 						: (renderedOpenUrl ? '' : targetTitle);
 
 					const scheduleId = await b64urlEnc(
-						await this.titlehash(`rule:${ruleTitle}\0${targetTitle}\0${triggerAt}`),
+						await this.titlehash(`rule:${ruleId}\0${targetTitle}\0${triggerAt}`),
 					);
 					const contentSig =
 						`${triggerAt}\0${renderedTitle}\0${renderedBody}\0${renderedTag}\0${renderedNav}\0${renderedOpenUrl}\0${
 							clickAction || ''
-						}`;
+						}\0${actionsSig}`;
 					nextMap.set(scheduleId, contentSig);
 
 					if (this.syncedRuleSchedules.get(scheduleId) !== contentSig) {
@@ -1090,12 +1102,14 @@ Formatted with `deno fmt`.
 							title: renderedTitle,
 							body: renderedBody,
 							tag: renderedTag || `rule-${scheduleId.slice(0, 12)}`,
+							actions: ruleActions,
 							data: {
 								navigateTo: renderedNav || undefined,
 								tiddlerTitle: targetTitle,
 								openUrl: renderedOpenUrl || undefined,
 								clickAction: clickAction || undefined,
 								ruleTitle,
+								ruleId,
 							},
 						});
 						if (payload) {
@@ -1166,7 +1180,8 @@ Formatted with `deno fmt`.
 				if (servers.length === 0) return;
 
 				let triggerAt = NaN;
-				const rawTriggerAt = paramObject.triggerAt ?? paramObject['trigger-at'];
+				const rawTriggerAt = paramObject.triggerAt ?? paramObject['trigger-at'] ?? paramObject.fireAt ??
+					paramObject['fire-at'];
 				const rawDelaySeconds = paramObject.delaySeconds ?? paramObject['delay-seconds'];
 				const rawDelayMinutes = paramObject.delayMinutes ?? paramObject['delay-minutes'];
 				if (rawTriggerAt !== undefined) {
@@ -1214,6 +1229,18 @@ Formatted with `deno fmt`.
 					}
 				}
 
+				let hookData;
+				const rawHookData = paramObject.hookData ?? paramObject['hook-data'];
+				if (rawHookData && typeof rawHookData === 'object') {
+					hookData = rawHookData;
+				} else if (typeof rawHookData === 'string' && rawHookData.trim()) {
+					try {
+						hookData = JSON.parse(rawHookData);
+					} catch (_e) {
+						hookData = rawHookData;
+					}
+				}
+
 				const payload = await this.encryptPushNotification({
 					title,
 					body,
@@ -1224,6 +1251,7 @@ Formatted with `deno fmt`.
 						tiddlerTitle: (paramObject.tiddlerTitle ?? paramObject['tiddler-title'] ?? navTarget) || undefined,
 						openUrl: openUrl || undefined,
 						clickAction: clickAction || undefined,
+						hookData: hookData !== undefined ? hookData : undefined,
 						scheduleId: rawId || scheduleId,
 					},
 				});
@@ -1672,7 +1700,13 @@ Formatted with `deno fmt`.
 					}
 				}
 				try {
-					$tw.hooks.invokeHook('th-pwa-notification-action', click);
+					$tw.hooks.invokeHook('th-pwa-notification-action', {
+						...click,
+						navigateTo: navTitle || null,
+						openUrl: actionSpec?.openUrl || data.openUrl || null,
+						clickAction: actionSpec?.clickAction || data.clickAction || null,
+						hookData: actionSpec?.hookData ?? data.hookData ?? null,
+					});
 				} catch (e) {
 					console.error('Error in th-pwa-notification-action hook:', e);
 				}
