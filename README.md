@@ -15,6 +15,7 @@ This repository is an actively maintained fork of [Val Packett's TiddlyPWA](http
 - **Lightweight Sync Backend**: Backed by embedded SQLite, requiring minimal CPU and memory footprints. Perfect for home servers, NAS, or low-cost VPS instances.
 - **Multi-Wiki / Multi-Tenant Support**: Manage multiple independent notebooks using unique sync tokens on a single backend instance without data overlap.
 - **Conflict Resolution**: Gracefully detects out-of-order writes and concurrent edits across multiple devices, offering visual banners and resolution workflows.
+- **Web Push Notifications & Plugin Hooks**: Built-in VAPID / RFC 8291 Web Push engine with a 3-tier developer API: sandboxed server-side cron watchers (`module-type: pwa-watcher`), zero-knowledge declarative due-date rules (`$:/tags/NotificationRule`), and ad-hoc timer messages (`tm-pwa-schedule-notification`).
 
 ## Architecture & Design Documentation
 
@@ -25,7 +26,8 @@ Comprehensive technical specifications and architecture documentation are availa
 - [**Cryptography & Security**](docs/architecture/cryptography.md): Zero-knowledge model, Argon2id WASM, HKDF key expansion, 8-key AES-GCM wear-out mitigation, and padding obfuscation.
 - [**Synchronization Protocol**](docs/architecture/sync-protocol.md): JSON-RPC wire protocol (`POST /tid.dly`), SSE real-time sync, monotonic delta sync, and multi-tab Web Locks coordination.
 - [**Conflict Resolution**](docs/architecture/conflict-resolution.md): 4-way conflict matrix, content-aware deduplication, non-destructive resolution, and IndexedDB transaction decoupling.
-- [**Data Models & Schemas**](docs/architecture/data-models.md): SQLite v1/v2 schemas, client IndexedDB stores, and runtime `$:/status` registers.
+- [**Web Push Notifications & Developer Guide**](docs/architecture/push-notifications.md): Authoring push notifications in your own TiddlyWiki via server watchers (`module-type: pwa-watcher`), declarative rules (`$:/tags/NotificationRule`), and widget messages (`tm-pwa-schedule-notification`).
+- [**Data Models & Schemas**](docs/architecture/data-models.md): SQLite v1/v2/v3 schemas, client IndexedDB stores, and runtime `$:/status` registers.
 - [**Development & Operations**](docs/architecture/development-and-operations.md): Deno 2 tooling, standalone HTML compilation, Docker multi-arch containers, and production reverse proxying.
 
 ## Quick Start with Docker

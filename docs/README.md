@@ -14,7 +14,8 @@ TiddlyPWA transforms [TiddlyWiki](https://tiddlywiki.com) into an offline-first,
 | [**Cryptography & Security**](architecture/cryptography.md)                | Zero-knowledge threat model, Argon2id WASM, HKDF key derivation, 8x AES-GCM wear-out mitigation, block padding | Security Auditors, Core Devs, LLMs       |
 | [**Sync Protocol & Realtime**](architecture/sync-protocol.md)              | JSON-RPC wire protocol, Server-Sent Events, monotonic clock checks, multi-tab election                         | Backend/Frontend Devs, Integrators, LLMs |
 | [**Conflict Resolution**](architecture/conflict-resolution.md)             | 4-way conflict matrix, content deduplication, non-destructive resolution, IDB async decoupling                 | Core Devs, UI Engineers, LLMs            |
-| [**Data Models & Schemas**](architecture/data-models.md)                   | SQLite v1/v2 schemas, IndexedDB stores, runtime `$:/status` registers, entity relationships                    | Database Devs, Maintainers, LLMs         |
+| [**Web Push Notifications**](architecture/push-notifications.md)           | 3-tier notification authoring (`pwa-watcher`, `$:/tags/NotificationRule`, `tm-pwa-schedule-notification`)      | Wiki Authors, Plugin Devs, LLMs          |
+| [**Data Models & Schemas**](architecture/data-models.md)                   | SQLite v1/v2/v3 schemas, IndexedDB stores, runtime `$:/status` registers, entity relationships                 | Database Devs, Maintainers, LLMs         |
 | [**Development & Operations**](architecture/development-and-operations.md) | Deno 2 tooling, standalone HTML compilation, Docker multi-arch containers, reverse proxies                     | DevOps, SREs, Contributors, LLMs         |
 
 ---
@@ -67,7 +68,10 @@ If you are an LLM agent reviewing or modifying this codebase, use the following 
 | `plugins/tiddlypwa/filters.js`        | Client / TiddlyWiki | Filter operator `[is[tiddlypwa]]` distinguishing stored vs file-baked tiddlers                                                 |
 | `plugins/web-app-manifest/main.js`    | Client / PWA        | Dynamic Web App Manifest generation, icon parsing, and Blob URL injection                                                      |
 | `server/app.ts`                       | Server / HTTP       | Main `TiddlyPWASyncApp` handler, route dispatching, JSON-RPC handling, and SSE stream controller                               |
-| `server/sqlite.ts`                    | Server / DB         | `SQLiteDatastore` implementation, schema migration (v1 -> v2), prepared queries, and LWW upserts                               |
+| `server/sqlite.ts`                    | Server / DB         | `SQLiteDatastore` implementation, schema migration (v1 -> v3), prepared queries, and LWW upserts                               |
+| `server/webpush.ts`                   | Server / Push       | Zero-dependency RFC 8292 VAPID JWT signing and RFC 8291 `aes128gcm` Web Push payload encryption                                |
+| `server/watcher_runner.ts`            | Server / Watchers   | Ed25519 signature verification, SSRF-guarded `host.fetch`, HTML/JSON-LD/XML helpers, and zero-permission Deno Worker execution |
+| `server/scheduler.ts`                 | Server / Scheduler  | Background loop dispatching due `scheduled_notifications` and timezone-aware cron `watcher_modules`                            |
 | `server/run.ts`                       | Server / CLI        | Entrypoint runner supporting CLI flags (`--port`, `--host`, `--db`, `--dotenv`), environment variables, and Unix sockets       |
 | `server/hash-admin-password.ts`       | Server / Admin      | CLI utility generating Argon2 salt and hash for `ADMIN_PASSWORD_*` credentials                                                 |
 | `server/pages.ts`                     | Server / UI         | Self-contained single-file HTML/CSS/JS control panel served at `/`                                                             |

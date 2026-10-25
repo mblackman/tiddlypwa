@@ -16,4 +16,4 @@ TiddlyPWA is maintained by [[Matt Blackman|https://github.com/mblackman]], forke
 Configure the plugin in the Control Panel
 </$button>
 
-See ''filters'' tab for filter operators.
+See ''filters'' tab for filter operators and ''notifications'' tab for authoring Web Push notifications.

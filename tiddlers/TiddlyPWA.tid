@@ -47,6 +47,11 @@ with ''encrypted'' local persistent storage and efficient ''synchronization'' wi
 		<div class="tpwadoc-title">Client-side Encryption</div>
 		<div class="tpwadoc-subtitle">Learn about the security model provided by TiddlyPWA</div>
 	</$link>
+	<$link overrideClass="tpwadoc-card tpwadoc-card-push" to="PushNotifications">
+		<div class="tpwadoc-icon">🔔</div>
+		<div class="tpwadoc-title">Push Notifications</div>
+		<div class="tpwadoc-subtitle">Build background watchers, due-date rules, and timers in your wiki</div>
+	</$link>
 </div>
 
 !! Contribute

@@ -5,7 +5,7 @@
 	"author": "Matt Blackman",
 	"version": "0.3.5",
 	"core-version": ">=5.2.0",
-	"list": "readme filters license",
+	"list": "readme filters notifications license",
 	"source": "https://github.com/mblackman/tiddlypwa",
 	"demo": "https://github.com/mblackman/tiddlypwa",
 	"plugin-type": "plugin"

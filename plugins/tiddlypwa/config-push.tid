@@ -53,6 +53,9 @@ caption: Push Notifications
 <hr/>
 
 <h3>🛰️ Server Watchers (<code>module-type: pwa-watcher</code>)</h3>
+<p style="font-size: 0.9em; color: #555;">
+	See <$button class="tc-btn-invisible tc-tiddlylink"><$action-navigate $to="$:/plugins/mblackman/tiddlypwa/notifications"/>Push Notification Developer Guide</$button> for instructions on authoring watchers, due-date rules (<code>$:/tags/NotificationRule</code>), and timer messages (<code>tm-pwa-schedule-notification</code>).
+</p>
 <p>
 	<$button message="tiddlypwa-refresh-watchers">Sync &amp; Refresh Watchers</$button>
 </p>

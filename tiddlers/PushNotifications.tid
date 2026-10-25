@@ -1,0 +1,75 @@
+title: PushNotifications
+tags: [[TiddlyPWA Docs]]
+
+TiddlyPWA supports **Web Push Notifications** and a three-tier extension system so you can build background watchers, due-date reminders, and interactive timers right inside your own TiddlyWiki.
+
+!! Enabling Push on Your Device
+
+# Open `$:/ControlPanel` → **TiddlyPWA** → **Push Notifications**.
+# Click **Enable Push Notifications** and grant browser permission.
+# Use **Send Test Notification** to verify delivery.
+
+!! Choosing a Notification Tier
+
+* **Tier 1 — Server Watchers (`module-type: pwa-watcher`)**: Sandboxed JavaScript ES modules synced to your server and executed on a cron schedule (for RSS/Atom feeds, JSON APIs, or web page scraping while your devices are offline).
+* **Tier 2 — Declarative Due-Date Rules (`$:/tags/NotificationRule`)**: Zero-knowledge, client-encrypted notifications automatically scheduled from tiddler filters and date fields (e.g. `due`).
+* **Tier 3 — Ad-Hoc Widget Messages (`tm-pwa-schedule-notification`)**: Zero-knowledge, client-encrypted one-off timers and reminders triggered from wikitext `<$button>` actions or JavaScript.
+
+!! Tier 1: Server Watchers (`module-type: pwa-watcher`)
+
+Create a tiddler with `type: application/javascript`, `module-type: pwa-watcher`, `watcher-id`, `schedule-cron`, and `allowed-hosts`:
+
+```javascript
+export async function evaluate(context, host) {
+	const res = await host.fetch('https://news.ycombinator.com/rss');
+	if (!res.ok || res.notModified) return [];
+	const feed = await host.parseXml(res.body);
+	const top = feed.items[0];
+	if (!top || (await host.getState('lastGuid')) === top.guid) return [];
+	await host.setState('lastGuid', top.guid);
+
+	return [{
+		notify: {
+			title: 'Top HN Story',
+			body: top.title,
+			openUrl: top.link, // or navigateTo: 'HN: ' + top.title, or clickAction: 'none'
+			actions: [{ action: 'open-wiki', title: 'Open in Wiki' }]
+		},
+		createTiddler: {
+			title: 'HN: ' + top.title,
+			text: top.link,
+			tags: ['HN']
+		},
+		actionPatches: {
+			'open-wiki': { navigateTo: 'HN: ' + top.title }
+		}
+	}];
+}
+```
+
+!! Tier 2: Declarative Rules (`$:/tags/NotificationRule`)
+
+Create a tiddler tagged `$:/tags/NotificationRule` with fields:
+* `filter`: `[tag[Task]!tag[Done]has[due]]`
+* `date-field`: `due` (supports TW timestamps, `YYYY-MM-DD`, `YYYYMMDD`, or ISO strings)
+* `default-time`: `09:00` (local time for date-only fields)
+* `offset-minutes`: `-15`
+* `title-template`: `Task Due: {{!!title}}`
+* `body-template`: `Due at {{!!due}}`
+* `navigate-to`, `url-field`, `open-url`, or `click-action`: control where clicking the notification goes
+
+!! Tier 3: Widget Messages (`tm-pwa-schedule-notification`)
+
+```tid
+<$button>
+  <$action-sendmessage
+    $message="tm-pwa-schedule-notification"
+    id="pomodoro-timer"
+    delay-seconds="1500"
+    title="Pomodoro Complete!"
+    body="25 minutes elapsed."
+    navigate-to="Pomodoro"
+  />
+  Start 25m Timer
+</$button>
+```
