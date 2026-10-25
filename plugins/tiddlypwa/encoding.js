@@ -35,7 +35,9 @@ Formatted with `deno fmt`.
 	};
 
 	module.exports.b64dec = function (base64) {
-		return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+		const norm = String(base64).replace(/-/g, '+').replace(/_/g, '/');
+		const padded = norm + '='.repeat((4 - (norm.length % 4)) % 4);
+		return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
 	};
 
 	module.exports.encodeData = async function (str, unBase64, padTo) {

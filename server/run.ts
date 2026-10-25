@@ -2,6 +2,7 @@ import * as dotenv from '@std/dotenv';
 import { parseArgs } from '@std/cli/parse-args';
 import { SQLiteDatastore } from './sqlite.ts';
 import { TiddlyPWASyncApp } from './app.ts';
+import { startSchedulerLoop } from './scheduler.ts';
 
 export async function listen(args: any) {
 	const denv = args.dotenv ? await dotenv.load() : {};
@@ -14,6 +15,7 @@ export async function listen(args: any) {
 		Deno.exit(1);
 	}
 	const basepath = args.basepath ?? envvar('BASE_PATH') ?? '';
+	const vapidSubject = args.vapidsubject ?? envvar('VAPID_SUBJECT') ?? 'mailto:noreply@example.com';
 	const dbPath = args.db ?? envvar('DB_PATH') ?? '.data/tiddly.db';
 	const lastSlash = dbPath.lastIndexOf('/');
 	if (lastSlash > 0) {
@@ -24,8 +26,11 @@ export async function listen(args: any) {
 		}
 	}
 	const db = new SQLiteDatastore(dbPath);
-	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath);
+	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath, vapidSubject);
+	await app.ensureVapidKeys();
 	await app.loadDefaultApp();
+	const schedulerIntervalMs = Number(args.schedulerinterval ?? envvar('SCHEDULER_INTERVAL_MS') ?? 30_000);
+	startSchedulerLoop(app, schedulerIntervalMs);
 
 	const socketPath = args.socket ?? envvar('SOCKET');
 	const port = Number(args.port ?? envvar('PORT') ?? 8000);

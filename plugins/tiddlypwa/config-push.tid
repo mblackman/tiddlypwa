@@ -1,0 +1,81 @@
+title: $:/plugins/mblackman/tiddlypwa/config-push
+tags: $:/tags/ControlPanel/TiddlyPWA
+caption: Push Notifications
+
+\define tv-wikilinks() no
+
+<$reveal type="lteq" state="$:/status/TiddlyPWAServerCount" text="0">
+<p>You do not have a sync server configured yet. Configure a sync server in the ''Synchronization'' tab first to enable Web Push notifications.</p>
+</$reveal>
+
+<$reveal type="gt" state="$:/status/TiddlyPWAServerCount" text="0">
+
+<h3>🔔 Web Push Notifications</h3>
+
+<$reveal type="nomatch" state="$:/status/TiddlyPWAPushSupported" text="yes">
+<p style="color: #666; font-style: italic;">
+	Web Push notifications (Service Worker + PushManager) are not supported in this browser environment or require HTTPS/installed PWA mode.
+</p>
+</$reveal>
+
+<$reveal type="match" state="$:/status/TiddlyPWAPushSupported" text="yes">
+
+<$reveal type="match" state="$:/status/TiddlyPWAPushSubscribed" text="yes">
+<p style="color: #0f5132; background: #d1e7dd; padding: 8px 12px; border-radius: 4px; border: 1px solid #badbcc;">
+	<strong>✅ Push Notifications are enabled on this device.</strong> Background alerts from watchers, scheduled notification rules, and timers will wake this device even when the app is closed.
+</p>
+<p>
+	<$button message="tiddlypwa-test-push" class="tc-btn-primary">Send Test Notification</$button>
+	<$button message="tiddlypwa-disable-push">Disable Push Notifications</$button>
+</p>
+</$reveal>
+
+<$reveal type="nomatch" state="$:/status/TiddlyPWAPushSubscribed" text="yes">
+<p>Receive background push notifications from your TiddlyPWA server for plugin watchers, due-date rules, and timers—even when the browser or mobile PWA is closed.</p>
+<$reveal type="match" state="$:/status/TiddlyPWAPushPermission" text="denied">
+<p style="color: #b02a37;">
+	⚠️ Notification permission is currently blocked for this site in your browser settings. Please allow notifications in your browser's site permissions and try again.
+</p>
+</$reveal>
+<p>
+	<$button message="tiddlypwa-enable-push" class="tc-btn-big tc-btn-primary">Enable Push Notifications</$button>
+</p>
+</$reveal>
+
+<$reveal type="nomatch" state="$:/status/TiddlyPWAPushResult" text="">
+<p style="font-size: 0.9em; color: #495057;">
+	{{$:/status/TiddlyPWAPushResult}}
+</p>
+</$reveal>
+
+</$reveal>
+
+<hr/>
+
+<h3>🛰️ Server Watchers (<code>module-type: pwa-watcher</code>)</h3>
+<p>
+	<$button message="tiddlypwa-refresh-watchers">Sync &amp; Refresh Watchers</$button>
+</p>
+
+<$list filter="[tag[$:/temp/TiddlyPWAWatcher]sort[watcher-id]]" emptyMessage="<p><em>No server watchers registered yet.</em></p>">
+<div style="border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px; margin-bottom: 8px;">
+	<div>
+		<strong><$view field="watcher-id"/></strong>
+		<span style="float: right;">
+			<$button message="tiddlypwa-run-watcher" param={{!!watcher-id}}>Run Now</$button>
+		</span>
+	</div>
+	<div style="font-size: 0.85em; color: #555; margin-top: 4px;">
+		Schedule: <code><$view field="schedule-cron"/></code> (<$view field="timezone"/>) |
+		Allowed hosts: <code><$view field="allowed-hosts"/></code> |
+		Last run: <$view field="last-run"/>
+	</div>
+	<$reveal type="nomatch" state="!!last-error" text="">
+	<div style="font-size: 0.85em; color: #b02a37; margin-top: 4px;">
+		⚠️ Error: <$view field="last-error"/>
+	</div>
+	</$reveal>
+</div>
+</$list>
+
+</$reveal>

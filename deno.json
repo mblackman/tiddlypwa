@@ -27,5 +27,6 @@
 		"rules": {
 			"exclude": ["no-explicit-any"]
 		}
-	}
+	},
+	"unstable": ["worker-options"]
 }

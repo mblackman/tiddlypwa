@@ -56,6 +56,9 @@ function setupTiddlyWiki(require: (id: string) => any) {
 			return true;
 		}
 		if (tiddler && tiddler.fields.type === 'application/javascript' && tiddler.fields['module-type']) {
+			if (tiddler.fields['module-type'] === 'pwa-watcher') {
+				return false;
+			}
 			return true;
 		}
 		return origDoesPluginRequireReload ? origDoesPluginRequireReload.call(this, title) : false;
@@ -110,6 +113,19 @@ Deno.test('Plugin Reload Detection: $:/temp/info-plugin updates do NOT trigger r
 	);
 	await new Promise((r) => setTimeout(r, 60));
 	assertEquals($tw.wiki.doesPluginRequireReload('$:/Import'), false);
+	assertEquals($tw.wiki.getTiddlerText('$:/status/RequireReloadDueToPluginChange'), 'no');
+
+	// 3.5. Server-side pwa-watcher JS tiddlers do NOT trigger reload
+	$tw.wiki.addTiddler(
+		new $tw.Tiddler({
+			title: '$:/config/push-test/hn-rss-watcher.js',
+			type: 'application/javascript',
+			'module-type': 'pwa-watcher',
+			text: 'export async function evaluate() { return []; }',
+		}),
+	);
+	await new Promise((r) => setTimeout(r, 60));
+	assertEquals($tw.wiki.doesPluginRequireReload('$:/config/push-test/hn-rss-watcher.js'), false);
 	assertEquals($tw.wiki.getTiddlerText('$:/status/RequireReloadDueToPluginChange'), 'no');
 
 	// 4. Real plugin addition triggers reload warning

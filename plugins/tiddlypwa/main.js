@@ -15,8 +15,10 @@ Formatted with `deno fmt`.
 	// Do this early to make it work on login screen too
 	if ('serviceWorker' in navigator) {
 		navigator.serviceWorker.onmessage = (evt) => {
-			if (evt.data.op == 'refresh') {
+			if (evt.data?.op == 'refresh') {
 				$tw.wiki.addTiddler({ title: '$:/status/TiddlyPWAUpdateAvailable', text: 'yes' });
+			} else if (evt.data?.op === 'push-click') {
+				$tw.syncadaptor?.handleServiceWorkerPushClick?.(evt.data.clickEvent);
 			}
 		};
 	}
@@ -64,6 +66,9 @@ Formatted with `deno fmt`.
 			return true;
 		}
 		if (tiddler && tiddler.fields.type === 'application/javascript' && tiddler.fields['module-type']) {
+			if (tiddler.fields['module-type'] === 'pwa-watcher') {
+				return false;
+			}
 			return true;
 		}
 		return origDoesPluginRequireReload ? origDoesPluginRequireReload.call(this, title) : false;
@@ -205,6 +210,12 @@ Formatted with `deno fmt`.
 			this.monitorTimeout = 2000;
 			this.modifiedQueue = new Set();
 			this.deletedQueue = new Set();
+			this.ackedPatchIds = new Set();
+			this.appliedPatchIds = new Set();
+			this.syncedRuleSchedules = new Map();
+			this.ruleSchedulesLoaded = false;
+			this.syncedWatchers = new Map();
+			this.watchersLoaded = false;
 			this.changesChannel = new BroadcastChannel(`tiddlypwa-changes:${location.pathname}`);
 			this.changesChannel.onmessage = (evt) => {
 				this.logger.log('Change from another tab');
@@ -236,6 +247,18 @@ Formatted with `deno fmt`.
 			this.wiki.addEventListener('change', (changes) => {
 				if (changes['$:/temp/TiddlyPWAPairIncludeKey']) {
 					this.updatePairUrl();
+				}
+				if (this.isReady()) {
+					const hasRelevantChange = Object.keys(changes).some((title) =>
+						title !== '$:/StoryList' &&
+						!title.startsWith('$:/status/') &&
+						!title.startsWith('$:/temp/') &&
+						!title.startsWith("Draft of '")
+					);
+					if (hasRelevantChange) {
+						this.scheduleNotificationRuleSync();
+						this.scheduleWatcherSync();
+					}
 				}
 			});
 
@@ -279,6 +302,9 @@ Formatted with `deno fmt`.
 				this.db.transaction('session', 'readwrite').objectStore('session').put({
 					enckeys: this.enckeys,
 					mackey: this.mackey,
+					pushKey: this.pushKey,
+					watcherSignKey: this.watcherSignKey,
+					watcherPubKeyB64: this.watcherPubKeyB64,
 				})
 					.onsuccess = (
 						_evt,
@@ -489,6 +515,42 @@ Formatted with `deno fmt`.
 			$tw.rootWidget.addEventListener('tiddlypwa-sync', (_evt) => {
 				this.sync(false);
 			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-enable-push', (_evt) => {
+				this.enablePushNotifications();
+			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-disable-push', (_evt) => {
+				this.disablePushNotifications();
+			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-test-push', (_evt) => {
+				this.sendTestPushNotification();
+			});
+
+			$tw.rootWidget.addEventListener('tm-pwa-schedule-notification', (evt) => {
+				this.scheduleAdhocNotification(evt?.paramObject || {});
+			});
+
+			$tw.rootWidget.addEventListener('tm-pwa-cancel-notification', (evt) => {
+				this.cancelAdhocNotification(evt?.paramObject || {});
+			});
+
+			$tw.rootWidget.addEventListener('tm-pwa-run-watcher', (evt) => {
+				const watcherId = evt?.paramObject?.watcherId || evt?.paramObject?.['watcher-id'] || evt?.param;
+				this.runWatcherNow(watcherId);
+			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-run-watcher', (evt) => {
+				const watcherId = evt?.paramObject?.watcherId || evt?.paramObject?.['watcher-id'] || evt?.param;
+				this.runWatcherNow(watcherId);
+			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-refresh-watchers', (_evt) => {
+				this.syncWatchers().then(() => this.refreshServerWatchers()).catch((e) =>
+					console.warn('Failed to refresh watchers:', e)
+				);
+			});
 		}
 
 		firstChange() {
@@ -518,8 +580,11 @@ Formatted with `deno fmt`.
 		}
 
 		async initServiceWorker() {
+			this.reflectPushStatus();
 			try {
 				const reg = await navigator.serviceWorker.register('sw.js');
+				this.swRegistration = reg;
+				await this.reflectPushStatus();
 				try {
 					await reg.update();
 				} catch (_updateErr) {
@@ -532,6 +597,1085 @@ Formatted with `deno fmt`.
 				if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
 				$tw.wiki.addTiddler({ title: '$:/status/TiddlyPWAWorkerError', text: e.message });
 				$tw.notifier.display('$:/plugins/mblackman/tiddlypwa/notif-sw-error');
+			}
+		}
+
+		getPushDbName() {
+			const scopeUrl = new URL('.', location.href);
+			return `tiddlypwa-push:${scopeUrl.pathname}`;
+		}
+
+		openPushDb() {
+			return new Promise((resolve, reject) => {
+				const req = indexedDB.open(this.getPushDbName(), 1);
+				req.onupgradeneeded = (evt) => {
+					const db = evt.target.result;
+					if (!db.objectStoreNames.contains('state')) {
+						db.createObjectStore('state');
+					}
+				};
+				req.onsuccess = (evt) => resolve(evt.target.result);
+				req.onerror = (evt) => reject(evt.target.error);
+			});
+		}
+
+		async persistPushKeyForServiceWorker() {
+			if (!this.pushKey || typeof indexedDB !== 'object') return;
+			try {
+				const db = await this.openPushDb();
+				try {
+					await new Promise((resolve, reject) => {
+						const txn = db.transaction('state', 'readwrite');
+						txn.objectStore('state').put({ key: this.pushKey }, 'pushKey');
+						txn.oncomplete = () => resolve();
+						txn.onerror = () => reject(txn.error);
+					});
+				} finally {
+					db.close();
+				}
+			} catch (e) {
+				console.warn('Could not persist pushKey for Service Worker:', e);
+			}
+		}
+
+		async reflectPushStatus() {
+			const supported = typeof window !== 'undefined' &&
+				'serviceWorker' in navigator &&
+				'PushManager' in window &&
+				'Notification' in window &&
+				window.isSecureContext;
+			this.wiki.addTiddler({
+				title: '$:/status/TiddlyPWAPushSupported',
+				text: supported ? 'yes' : 'no',
+			});
+			if (!supported) {
+				this.wiki.addTiddler({ title: '$:/status/TiddlyPWAPushPermission', text: 'unsupported' });
+				this.wiki.addTiddler({ title: '$:/status/TiddlyPWAPushSubscribed', text: 'no' });
+				return;
+			}
+			this.wiki.addTiddler({
+				title: '$:/status/TiddlyPWAPushPermission',
+				text: Notification.permission,
+			});
+			try {
+				const reg = this.swRegistration || await navigator.serviceWorker.getRegistration();
+				const sub = reg?.pushManager ? await reg.pushManager.getSubscription() : null;
+				this.pushEndpoint = sub?.endpoint || null;
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushSubscribed',
+					text: sub ? 'yes' : 'no',
+				});
+				if (sub && !this.syncedPushSubOnce && this.db && this.mackey) {
+					this.syncedPushSubOnce = true;
+					this.persistPushKeyForServiceWorker();
+					const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+					const subJson = sub.toJSON();
+					for (const server of servers) {
+						fetch(server.url, {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({
+								tiddlypwa: 1,
+								op: 'push_subscribe',
+								token: server.token,
+								authcode: await b64enc(await this.titlehash(server.token)),
+								subscription: subJson,
+								uaHint: navigator.userAgent,
+							}),
+						}).catch(() => {});
+					}
+				}
+			} catch (e) {
+				console.warn('Failed to query push subscription state:', e);
+				this.wiki.addTiddler({ title: '$:/status/TiddlyPWAPushSubscribed', text: 'no' });
+			}
+		}
+
+		async encryptPushNotification(notifObj) {
+			if (!this.pushKey) return null;
+			const iv = crypto.getRandomValues(new Uint8Array(12));
+			const plainBytes = utfenc.encode(JSON.stringify(notifObj));
+			const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, this.pushKey, plainBytes);
+			return {
+				mode: 'encrypted',
+				iv: await b64enc(iv),
+				ct: await b64enc(ct),
+			};
+		}
+
+		async enablePushNotifications() {
+			if (!this.db) return;
+			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAPushResult', text: 'Enabling push notifications…' });
+			try {
+				const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+				if (servers.length === 0) {
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWAPushResult',
+						text: 'Please add a sync server first.',
+					});
+					return;
+				}
+				const perm = await Notification.requestPermission();
+				this.wiki.addTiddler({ title: '$:/status/TiddlyPWAPushPermission', text: perm });
+				if (perm !== 'granted') {
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWAPushResult',
+						text: 'Notification permission was not granted.',
+					});
+					return;
+				}
+
+				const primaryServer = servers[0];
+				const infoResp = await fetch(primaryServer.url, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						tiddlypwa: 1,
+						op: 'push_info',
+						token: primaryServer.token,
+						authcode: await b64enc(await this.titlehash(primaryServer.token)),
+					}),
+				});
+				if (!infoResp.ok) {
+					throw new Error(`Server returned status ${infoResp.status} on push_info`);
+				}
+				const { vapidPublicKey } = await infoResp.json();
+				if (!vapidPublicKey) {
+					throw new Error('Server did not return a VAPID public key');
+				}
+
+				const vapidKeyBytes = b64dec(vapidPublicKey);
+				const reg = this.swRegistration || await navigator.serviceWorker.ready;
+				let existingSub = await reg.pushManager.getSubscription();
+				if (existingSub && existingSub.options?.applicationServerKey) {
+					const existingKey = new Uint8Array(existingSub.options.applicationServerKey);
+					if (!arrayEq(existingKey, vapidKeyBytes)) {
+						await existingSub.unsubscribe().catch(() => {});
+						existingSub = null;
+					}
+				}
+				const sub = existingSub || await reg.pushManager.subscribe({
+					userVisibleOnly: true,
+					applicationServerKey: vapidKeyBytes,
+				});
+				const subJson = sub.toJSON();
+				this.pushEndpoint = sub.endpoint;
+
+				await this.persistPushKeyForServiceWorker();
+
+				for (const server of servers) {
+					const subResp = await fetch(server.url, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							tiddlypwa: 1,
+							op: 'push_subscribe',
+							token: server.token,
+							authcode: await b64enc(await this.titlehash(server.token)),
+							subscription: subJson,
+							uaHint: navigator.userAgent,
+						}),
+					});
+					if (!subResp.ok) {
+						throw new Error(`Failed to register subscription with ${server.url}`);
+					}
+				}
+
+				await this.reflectPushStatus();
+				this.scheduleNotificationRuleSync();
+				this.scheduleWatcherSync();
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushResult',
+					text: 'Push notifications enabled on this device.',
+				});
+			} catch (e) {
+				console.error('Failed to enable push notifications:', e);
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushResult',
+					text: 'Error enabling push notifications: ' + (e.message || e),
+				});
+			}
+		}
+
+		async disablePushNotifications() {
+			if (!this.db) return;
+			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAPushResult', text: 'Disabling push notifications…' });
+			try {
+				const reg = this.swRegistration || await navigator.serviceWorker.getRegistration();
+				const sub = reg?.pushManager ? await reg.pushManager.getSubscription() : null;
+				const endpoint = sub?.endpoint || this.pushEndpoint;
+
+				const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+				for (const server of servers) {
+					if (!endpoint) continue;
+					await fetch(server.url, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							tiddlypwa: 1,
+							op: 'push_unsubscribe',
+							token: server.token,
+							authcode: await b64enc(await this.titlehash(server.token)),
+							endpoint,
+						}),
+					}).catch((e) => console.warn('Unsubscribe server error:', e));
+				}
+
+				if (sub) {
+					await sub.unsubscribe();
+				}
+				this.pushEndpoint = null;
+				await this.reflectPushStatus();
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushResult',
+					text: 'Push notifications disabled on this device.',
+				});
+			} catch (e) {
+				console.error('Failed to disable push notifications:', e);
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushResult',
+					text: 'Error disabling push notifications: ' + (e.message || e),
+				});
+			}
+		}
+
+		async sendTestPushNotification() {
+			if (!this.db) return;
+			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAPushResult', text: 'Sending test push notification…' });
+			try {
+				const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+				if (servers.length === 0) {
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWAPushResult',
+						text: 'No sync server configured.',
+					});
+					return;
+				}
+				await this.persistPushKeyForServiceWorker();
+				const payload = await this.encryptPushNotification({
+					title: 'TiddlyPWA Push Active',
+					body: 'End-to-end encrypted push notification verified on this device!',
+					tag: 'tiddlypwa-test',
+				});
+				const primaryServer = servers[0];
+				const resp = await fetch(primaryServer.url, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						tiddlypwa: 1,
+						op: 'push_test',
+						token: primaryServer.token,
+						authcode: await b64enc(await this.titlehash(primaryServer.token)),
+						endpoint: this.pushEndpoint || undefined,
+						payload: payload || undefined,
+					}),
+				});
+				if (!resp.ok) {
+					throw new Error(`Server returned status ${resp.status}`);
+				}
+				const res = await resp.json();
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushResult',
+					text: res.sent > 0
+						? `Test notification sent (${res.sent} delivered).`
+						: `Push test completed with 0 active deliveries (failed: ${res.failed || 0}).`,
+				});
+			} catch (e) {
+				console.error('Failed to send test push notification:', e);
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushResult',
+					text: 'Error sending test push: ' + (e.message || e),
+				});
+			}
+		}
+
+		parseRuleTriggerAt(rawVal, defaultTimeStr = '09:00', offsetMinutes = 0) {
+			if (rawVal === undefined || rawVal === null) return null;
+			const str = String(rawVal).trim();
+			if (!str) return null;
+
+			let hours = 9;
+			let minutes = 0;
+			const timeMatch = /^(\d{1,2}):(\d{2})$/.exec(String(defaultTimeStr || '09:00').trim());
+			if (timeMatch) {
+				const h = Number(timeMatch[1]);
+				const m = Number(timeMatch[2]);
+				if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+					hours = h;
+					minutes = m;
+				}
+			}
+
+			let baseMs = NaN;
+			const isoDateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str);
+			const twDateOnly = /^(\d{4})(\d{2})(\d{2})$/.exec(str);
+			if (isoDateOnly || twDateOnly) {
+				const m = isoDateOnly || twDateOnly;
+				const year = Number(m[1]);
+				const month = Number(m[2]);
+				const day = Number(m[3]);
+				const localDate = new Date(year, month - 1, day, hours, minutes, 0, 0);
+				baseMs = localDate.getTime();
+			} else if (/^\d{14,17}$/.test(str)) {
+				const parsed = $tw.utils.parseDate(str);
+				if (parsed instanceof Date) {
+					baseMs = parsed.getTime();
+				}
+			} else if (/^\d{10,13}$/.test(str)) {
+				const num = Number(str);
+				baseMs = str.length === 10 ? num * 1000 : num;
+			} else {
+				const parsed = new Date(str);
+				baseMs = parsed.getTime();
+			}
+
+			if (!Number.isFinite(baseMs) || baseMs <= 0) return null;
+			const offsetMs = (Number(offsetMinutes) || 0) * 60 * 1000;
+			return Math.floor(baseMs + offsetMs);
+		}
+
+		async loadPersistedRuleSchedules() {
+			if (this.ruleSchedulesLoaded || typeof indexedDB !== 'object') return;
+			this.ruleSchedulesLoaded = true;
+			try {
+				const db = await this.openPushDb();
+				try {
+					const stored = await new Promise((resolve, reject) => {
+						const txn = db.transaction('state', 'readonly');
+						const req = txn.objectStore('state').get('ruleSchedules');
+						req.onsuccess = () => resolve(req.result);
+						req.onerror = () => reject(req.error);
+					});
+					if (stored && typeof stored === 'object') {
+						for (const [k, v] of Object.entries(stored)) {
+							if (typeof k === 'string' && typeof v === 'string') {
+								this.syncedRuleSchedules.set(k, v);
+							}
+						}
+					}
+				} finally {
+					db.close();
+				}
+			} catch (e) {
+				console.warn('Could not load persisted rule schedules:', e);
+			}
+		}
+
+		async savePersistedRuleSchedules() {
+			if (typeof indexedDB !== 'object') return;
+			try {
+				const obj = Object.fromEntries(this.syncedRuleSchedules.entries());
+				const db = await this.openPushDb();
+				try {
+					await new Promise((resolve, reject) => {
+						const txn = db.transaction('state', 'readwrite');
+						txn.objectStore('state').put(obj, 'ruleSchedules');
+						txn.oncomplete = () => resolve();
+						txn.onerror = () => reject(txn.error);
+					});
+				} finally {
+					db.close();
+				}
+			} catch (e) {
+				console.warn('Could not save persisted rule schedules:', e);
+			}
+		}
+
+		scheduleNotificationRuleSync() {
+			if (!this.isReady() || !navigator.onLine) return;
+			clearTimeout(this.ruleSyncTimer);
+			this.ruleSyncTimer = setTimeout(() => {
+				this.syncNotificationRules().catch((e) => console.warn('Failed to sync notification rules:', e));
+			}, 1200);
+		}
+
+		async syncNotificationRules() {
+			if (!this.isReady() || !this.db || !this.pushKey || !this.mackey) return;
+			const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+			if (servers.length === 0) return;
+
+			await this.loadPersistedRuleSchedules();
+
+			const ruleTitles = this.wiki.filterTiddlers(
+				'[all[tiddlers+shadows]tag[$:/tags/NotificationRule]!has[draft.of]]',
+			);
+			const nextMap = new Map();
+			const upserts = [];
+			const nowMs = Date.now();
+
+			for (const ruleTitle of ruleTitles) {
+				const ruleTiddler = this.wiki.getTiddler(ruleTitle);
+				if (!ruleTiddler) continue;
+				if (ruleTiddler.fields.disabled === 'yes' || ruleTiddler.fields.enabled === 'no') continue;
+
+				const filter = ruleTiddler.fields.filter;
+				if (typeof filter !== 'string' || !filter.trim()) continue;
+				const dateField = ruleTiddler.fields['date-field'] || 'due-date';
+				const defaultTime = ruleTiddler.fields['default-time'] || '09:00';
+				const offsetMinutes = Number(ruleTiddler.fields['offset-minutes'] || 0);
+				const titleTemplate = ruleTiddler.fields['notify-title'] || ruleTiddler.fields['title-template'] ||
+					'{{!!title}}';
+				const bodyTemplate = ruleTiddler.fields['notify-body'] || ruleTiddler.fields['body-template'] || '';
+				const tagTemplate = ruleTiddler.fields['notify-tag'] || ruleTiddler.fields['tag-template'] || '';
+				const navTemplate = ruleTiddler.fields['navigate-to'];
+				const openUrlTemplate = ruleTiddler.fields['open-url'];
+				const urlField = ruleTiddler.fields['url-field'];
+				const clickAction = ruleTiddler.fields['click-action'];
+
+				let matchedTitles = [];
+				try {
+					matchedTitles = this.wiki.filterTiddlers(filter);
+				} catch (e) {
+					console.warn(`Invalid filter in NotificationRule ${ruleTitle}:`, e);
+					continue;
+				}
+
+				for (const targetTitle of matchedTitles) {
+					const targetTiddler = this.wiki.getTiddler(targetTitle);
+					if (!targetTiddler || isDraftTiddler(targetTiddler)) continue;
+					const rawDate = targetTiddler.getFieldString(dateField);
+					const triggerAt = this.parseRuleTriggerAt(rawDate, defaultTime, offsetMinutes);
+					if (!triggerAt || triggerAt <= nowMs - 60000) continue;
+
+					const renderedTitle = this.wiki.renderText(
+						'text/plain',
+						'text/vnd.tiddlywiki',
+						titleTemplate,
+						{ variables: { currentTiddler: targetTitle } },
+					).trim() || targetTitle;
+					const renderedBody = bodyTemplate
+						? this.wiki.renderText(
+							'text/plain',
+							'text/vnd.tiddlywiki',
+							bodyTemplate,
+							{ variables: { currentTiddler: targetTitle } },
+						).trim()
+						: '';
+					const renderedTag = tagTemplate
+						? this.wiki.renderText(
+							'text/plain',
+							'text/vnd.tiddlywiki',
+							tagTemplate,
+							{ variables: { currentTiddler: targetTitle } },
+						).trim()
+						: '';
+					const renderedOpenUrl = openUrlTemplate
+						? this.wiki.renderText(
+							'text/plain',
+							'text/vnd.tiddlywiki',
+							openUrlTemplate,
+							{ variables: { currentTiddler: targetTitle } },
+						).trim()
+						: (urlField ? (targetTiddler.getFieldString(urlField) || '').trim() : '');
+					const renderedNav = navTemplate !== undefined
+						? this.wiki.renderText(
+							'text/plain',
+							'text/vnd.tiddlywiki',
+							navTemplate,
+							{ variables: { currentTiddler: targetTitle } },
+						).trim()
+						: (renderedOpenUrl ? '' : targetTitle);
+
+					const scheduleId = await b64urlEnc(
+						await this.titlehash(`rule:${ruleTitle}\0${targetTitle}\0${triggerAt}`),
+					);
+					const contentSig =
+						`${triggerAt}\0${renderedTitle}\0${renderedBody}\0${renderedTag}\0${renderedNav}\0${renderedOpenUrl}\0${
+							clickAction || ''
+						}`;
+					nextMap.set(scheduleId, contentSig);
+
+					if (this.syncedRuleSchedules.get(scheduleId) !== contentSig) {
+						const payload = await this.encryptPushNotification({
+							title: renderedTitle,
+							body: renderedBody,
+							tag: renderedTag || `rule-${scheduleId.slice(0, 12)}`,
+							data: {
+								navigateTo: renderedNav || undefined,
+								tiddlerTitle: targetTitle,
+								openUrl: renderedOpenUrl || undefined,
+								clickAction: clickAction || undefined,
+								ruleTitle,
+							},
+						});
+						if (payload) {
+							upserts.push({
+								scheduleId,
+								triggerAt,
+								payload,
+								targetEndpoint: null,
+							});
+						}
+					}
+				}
+			}
+
+			const removals = [];
+			for (const oldId of this.syncedRuleSchedules.keys()) {
+				if (!nextMap.has(oldId)) {
+					removals.push(oldId);
+				}
+			}
+
+			if (upserts.length === 0 && removals.length === 0) return;
+
+			let allSucceeded = true;
+			for (const server of servers) {
+				try {
+					const resp = await fetch(server.url, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							tiddlypwa: 1,
+							op: 'sync_schedules',
+							token: server.token,
+							authcode: await b64enc(await this.titlehash(server.token)),
+							upserts: upserts.length > 0 ? upserts : undefined,
+							removals: removals.length > 0 ? removals : undefined,
+						}),
+					});
+					if (!resp.ok) {
+						allSucceeded = false;
+					}
+				} catch (e) {
+					allSucceeded = false;
+					console.warn('Error syncing notification rules with server:', e);
+				}
+			}
+
+			if (allSucceeded) {
+				this.syncedRuleSchedules = nextMap;
+				await this.savePersistedRuleSchedules();
+			}
+		}
+
+		async computeAdhocScheduleId(rawId) {
+			const idStr = typeof rawId === 'string' && rawId.trim().length > 0
+				? rawId.trim()
+				: await b64urlEnc(crypto.getRandomValues(new Uint8Array(12)));
+			if (this.mackey) {
+				return await b64urlEnc(await this.titlehash('adhoc:' + idStr));
+			}
+			return idStr;
+		}
+
+		async scheduleAdhocNotification(paramObject = {}) {
+			if (!this.db || !this.pushKey || !this.mackey) return;
+			try {
+				const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+				if (servers.length === 0) return;
+
+				let triggerAt = NaN;
+				const rawTriggerAt = paramObject.triggerAt ?? paramObject['trigger-at'];
+				const rawDelaySeconds = paramObject.delaySeconds ?? paramObject['delay-seconds'];
+				const rawDelayMinutes = paramObject.delayMinutes ?? paramObject['delay-minutes'];
+				if (rawTriggerAt !== undefined) {
+					const raw = rawTriggerAt;
+					if (/^\d{10,13}$/.test(String(raw).trim())) {
+						const n = Number(String(raw).trim());
+						triggerAt = String(raw).trim().length === 10 ? n * 1000 : n;
+					} else if (/^\d{14,17}$/.test(String(raw).trim())) {
+						const d = $tw.utils.parseDate(String(raw).trim());
+						triggerAt = d instanceof Date ? d.getTime() : NaN;
+					} else {
+						triggerAt = new Date(raw).getTime();
+					}
+				} else if (rawDelaySeconds !== undefined) {
+					triggerAt = Date.now() + Number(rawDelaySeconds) * 1000;
+				} else if (rawDelayMinutes !== undefined) {
+					triggerAt = Date.now() + Number(rawDelayMinutes) * 60 * 1000;
+				}
+				if (!Number.isFinite(triggerAt) || triggerAt <= 0) {
+					console.warn('tm-pwa-schedule-notification: missing or invalid triggerAt / delaySeconds');
+					return;
+				}
+
+				const rawId = paramObject.id ?? paramObject.scheduleId ?? paramObject['schedule-id'];
+				const scheduleId = await this.computeAdhocScheduleId(rawId);
+				const title = paramObject.title || 'TiddlyWiki Reminder';
+				const body = paramObject.body || '';
+				const tag = paramObject.tag || `adhoc-${scheduleId.slice(0, 12)}`;
+				const scope = paramObject.scope === 'all' ? 'all' : 'device';
+				const targetEndpoint = scope === 'all' ? null : (this.pushEndpoint || null);
+				const navTarget = paramObject.navigateTo ?? paramObject['navigate-to'] ?? paramObject.tiddlerTitle ??
+					paramObject['tiddler-title'];
+				const openUrl = paramObject.openUrl ?? paramObject['open-url'];
+				const clickAction = paramObject.clickAction ?? paramObject['click-action'];
+				let actions;
+				const rawActions = paramObject.actions ?? paramObject['actions-json'];
+				if (Array.isArray(rawActions)) {
+					actions = rawActions;
+				} else if (typeof rawActions === 'string' && rawActions.trim()) {
+					try {
+						const parsed = JSON.parse(rawActions);
+						if (Array.isArray(parsed)) actions = parsed;
+					} catch (_e) {
+						// Ignore invalid JSON actions
+					}
+				}
+
+				const payload = await this.encryptPushNotification({
+					title,
+					body,
+					tag,
+					actions,
+					data: {
+						navigateTo: navTarget || undefined,
+						tiddlerTitle: (paramObject.tiddlerTitle ?? paramObject['tiddler-title'] ?? navTarget) || undefined,
+						openUrl: openUrl || undefined,
+						clickAction: clickAction || undefined,
+						scheduleId: rawId || scheduleId,
+					},
+				});
+				if (!payload) return;
+
+				for (const server of servers) {
+					await fetch(server.url, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							tiddlypwa: 1,
+							op: 'sync_schedules',
+							token: server.token,
+							authcode: await b64enc(await this.titlehash(server.token)),
+							upserts: [{
+								scheduleId,
+								triggerAt: Math.floor(triggerAt),
+								payload,
+								targetEndpoint,
+							}],
+						}),
+					});
+				}
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushResult',
+					text: this.pushEndpoint
+						? `Scheduled "${title}" for ${new Date(triggerAt).toLocaleTimeString()}.`
+						: `Scheduled "${title}", but Push Notifications are not enabled on this device yet! Click "Enable Push Notifications on This Device" first.`,
+				});
+			} catch (e) {
+				console.error('Failed to schedule ad-hoc notification:', e);
+			}
+		}
+
+		async cancelAdhocNotification(paramObject = {}) {
+			const rawId = paramObject.id ?? paramObject.scheduleId ?? paramObject['schedule-id'];
+			if (!this.db || !this.mackey || !rawId) return;
+			try {
+				const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+				if (servers.length === 0) return;
+				const scheduleId = await this.computeAdhocScheduleId(rawId);
+				for (const server of servers) {
+					await fetch(server.url, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							tiddlypwa: 1,
+							op: 'sync_schedules',
+							token: server.token,
+							authcode: await b64enc(await this.titlehash(server.token)),
+							removals: [scheduleId],
+						}),
+					});
+				}
+			} catch (e) {
+				console.error('Failed to cancel ad-hoc notification:', e);
+			}
+		}
+
+		async loadPersistedWatchers() {
+			if (this.watchersLoaded || typeof indexedDB !== 'object') return;
+			this.watchersLoaded = true;
+			try {
+				const db = await this.openPushDb();
+				try {
+					const stored = await new Promise((resolve, reject) => {
+						const txn = db.transaction('state', 'readonly');
+						const req = txn.objectStore('state').get('syncedWatchers');
+						req.onsuccess = () => resolve(req.result);
+						req.onerror = () => reject(req.error);
+					});
+					if (stored && typeof stored === 'object') {
+						for (const [k, v] of Object.entries(stored)) {
+							if (typeof k === 'string' && typeof v === 'string') {
+								this.syncedWatchers.set(k, v);
+							}
+						}
+					}
+				} finally {
+					db.close();
+				}
+			} catch (e) {
+				console.warn('Could not load persisted watchers:', e);
+			}
+		}
+
+		async savePersistedWatchers() {
+			if (typeof indexedDB !== 'object') return;
+			try {
+				const obj = Object.fromEntries(this.syncedWatchers.entries());
+				const db = await this.openPushDb();
+				try {
+					await new Promise((resolve, reject) => {
+						const txn = db.transaction('state', 'readwrite');
+						txn.objectStore('state').put(obj, 'syncedWatchers');
+						txn.oncomplete = () => resolve();
+						txn.onerror = () => reject(txn.error);
+					});
+				} finally {
+					db.close();
+				}
+			} catch (e) {
+				console.warn('Could not save persisted watchers:', e);
+			}
+		}
+
+		scheduleWatcherSync() {
+			if (!this.isReady() || !navigator.onLine) return;
+			clearTimeout(this.watcherSyncTimer);
+			this.watcherSyncTimer = setTimeout(() => {
+				this.syncWatchers().catch((e) => console.warn('Failed to sync pwa-watchers:', e));
+			}, 1500);
+		}
+
+		async syncWatchers() {
+			if (!this.isReady() || !this.db || !this.mackey || !this.watcherSignKey || !this.watcherPubKeyB64) {
+				return;
+			}
+			const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+			if (servers.length === 0) return;
+
+			await this.loadPersistedWatchers();
+
+			const watcherTitles = this.wiki.filterTiddlers(
+				'[all[tiddlers+shadows]module-type[pwa-watcher]!has[draft.of]]',
+			);
+			const nextMap = new Map();
+			const watchersToUpload = [];
+			const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
+			for (const wTitle of watcherTitles) {
+				const wTiddler = this.wiki.getTiddler(wTitle);
+				if (!wTiddler) continue;
+				if (wTiddler.fields.disabled === 'yes' || wTiddler.fields.enabled === 'no') continue;
+
+				const codeSource = wTiddler.fields.text || '';
+				if (!codeSource.trim()) continue;
+
+				const watcherId = String(wTiddler.fields['watcher-id'] || wTitle).trim();
+				const allowedHosts = String(wTiddler.fields['allowed-hosts'] || '').trim();
+				const scheduleCron = String(wTiddler.fields['schedule-cron'] || '0 * * * *').trim();
+				const timezone = String(wTiddler.fields.timezone || browserTimezone).trim() || 'UTC';
+				const targetFilter = String(wTiddler.fields['target-filter'] || '').trim();
+				const rawWatchedFields = $tw.utils.parseStringArray(wTiddler.fields['watched-fields'] || 'title') || ['title'];
+				const sortedFieldNames = [...new Set(rawWatchedFields.length > 0 ? rawWatchedFields : ['title'])].sort();
+
+				const watchedItems = [];
+				if (targetFilter) {
+					let matchedTitles = [];
+					try {
+						matchedTitles = this.wiki.filterTiddlers(targetFilter);
+					} catch (e) {
+						console.warn(`Invalid target-filter in pwa-watcher ${wTitle}:`, e);
+						continue;
+					}
+					for (const itemTitle of matchedTitles) {
+						const itemTid = this.wiki.getTiddler(itemTitle);
+						if (!itemTid || isDraftTiddler(itemTid)) continue;
+						const fields = {};
+						for (const fName of sortedFieldNames) {
+							fields[fName] = String(itemTid.getFieldString(fName) ?? '');
+						}
+						watchedItems.push({
+							title: String(itemTitle),
+							fields,
+						});
+					}
+				}
+
+				const codeHash = await b64urlEnc(await crypto.subtle.digest('SHA-256', utfenc.encode(codeSource)));
+				const canonicalPayload = JSON.stringify({
+					watcherId,
+					codeHash,
+					allowedHosts,
+					scheduleCron,
+					timezone,
+					watchedItems,
+				});
+				const sigBuf = await crypto.subtle.sign(
+					{ name: 'Ed25519' },
+					this.watcherSignKey,
+					utfenc.encode(canonicalPayload),
+				);
+				const signature = await b64urlEnc(sigBuf);
+
+				nextMap.set(watcherId, signature);
+				if (this.syncedWatchers.get(watcherId) !== signature) {
+					watchersToUpload.push({
+						watcherId,
+						codeHash,
+						codeSource,
+						allowedHosts,
+						scheduleCron,
+						timezone,
+						watchedItems,
+						signature,
+					});
+				}
+			}
+
+			const removedWatcherIds = [];
+			for (const oldId of this.syncedWatchers.keys()) {
+				if (!nextMap.has(oldId)) {
+					removedWatcherIds.push(oldId);
+				}
+			}
+
+			if (watchersToUpload.length === 0 && removedWatcherIds.length === 0) {
+				await this.refreshServerWatchers();
+				return;
+			}
+
+			let allSucceeded = true;
+			for (const server of servers) {
+				try {
+					const resp = await fetch(server.url, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							tiddlypwa: 1,
+							op: 'sync_watchers',
+							token: server.token,
+							authcode: await b64enc(await this.titlehash(server.token)),
+							watcherPubKey: this.watcherPubKeyB64,
+							watchers: watchersToUpload.length > 0 ? watchersToUpload : undefined,
+							removedWatcherIds: removedWatcherIds.length > 0 ? removedWatcherIds : undefined,
+						}),
+					});
+					if (!resp.ok) {
+						allSucceeded = false;
+					}
+				} catch (e) {
+					allSucceeded = false;
+					console.warn('Error syncing pwa-watchers with server:', e);
+				}
+			}
+
+			if (allSucceeded) {
+				this.syncedWatchers = nextMap;
+				await this.savePersistedWatchers();
+			}
+			await this.refreshServerWatchers();
+		}
+
+		async refreshServerWatchers() {
+			if (!this.db || !this.mackey) return;
+			try {
+				for (const tidname of this.wiki.getTiddlersWithTag('$:/temp/TiddlyPWAWatcher')) {
+					this.wiki.deleteTiddler(tidname);
+				}
+				const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+				if (servers.length === 0) {
+					this.wiki.addTiddler({ title: '$:/status/TiddlyPWAWatcherCount', text: '0' });
+					return;
+				}
+				const primaryServer = servers[0];
+				const resp = await fetch(primaryServer.url, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						tiddlypwa: 1,
+						op: 'list_watchers',
+						token: primaryServer.token,
+						authcode: await b64enc(await this.titlehash(primaryServer.token)),
+					}),
+				});
+				if (!resp.ok) return;
+				const { watchers } = await resp.json();
+				const list = Array.isArray(watchers) ? watchers : [];
+				for (const w of list) {
+					this.wiki.addTiddler({
+						title: '$:/temp/TiddlyPWAWatchers/' + w.watcherId,
+						tags: ['$:/temp/TiddlyPWAWatcher'],
+						'watcher-id': w.watcherId,
+						'schedule-cron': w.scheduleCron || '',
+						timezone: w.timezone || 'UTC',
+						'allowed-hosts': w.allowedHosts || '',
+						'last-run': w.lastRunAt && w.lastRunAt > 0 ? new Date(w.lastRunAt).toLocaleString() : 'never',
+						'last-error': w.lastError || '',
+					});
+				}
+				this.wiki.addTiddler({ title: '$:/status/TiddlyPWAWatcherCount', text: String(list.length) });
+			} catch (e) {
+				console.warn('Could not refresh server watcher list:', e);
+			}
+		}
+
+		async runWatcherNow(watcherId) {
+			if (!this.db || !this.mackey || !watcherId) return;
+			this.wiki.addTiddler({
+				title: '$:/status/TiddlyPWAPushResult',
+				text: `Running watcher "${watcherId}" on server…`,
+			});
+			try {
+				await this.syncWatchers();
+				const servers = await adb(this.db.transaction('syncservers').objectStore('syncservers').getAll());
+				if (servers.length === 0) return;
+				const primaryServer = servers[0];
+				const resp = await fetch(primaryServer.url, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						tiddlypwa: 1,
+						op: 'run_watcher',
+						token: primaryServer.token,
+						authcode: await b64enc(await this.titlehash(primaryServer.token)),
+						watcherId: String(watcherId),
+					}),
+				});
+				const res = await resp.json();
+				if (!resp.ok || !res.ok) {
+					throw new Error(res.error || `Server returned status ${resp.status}`);
+				}
+				await this.refreshServerWatchers();
+				if (res.patchesStaged > 0) {
+					this.backgroundSync();
+				}
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushResult',
+					text: `Watcher "${watcherId}" finished: ${res.notificationsSent || 0} notification(s) sent, ${
+						res.patchesStaged || 0
+					} patch(es) staged.`,
+				});
+			} catch (e) {
+				console.error('Failed to run watcher on server:', e);
+				await this.refreshServerWatchers();
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAPushResult',
+					text: `Watcher "${watcherId}" error: ` + (e.message || e),
+				});
+			}
+		}
+
+		applySingleWatcherPatchSpec(spec) {
+			if (!spec || typeof spec !== 'object') return false;
+			let modifiedAny = false;
+			if (spec.patchTarget && typeof spec.patchTarget === 'object') {
+				const targetTitle = spec.patchTarget.title;
+				if (typeof targetTitle === 'string' && targetTitle.length > 0) {
+					const existing = this.wiki.getTiddler(targetTitle);
+					const baseFields = existing ? existing.fields : { title: targetTitle, created: new Date() };
+					const nextFields = {
+						...baseFields,
+						...(typeof spec.patchTarget.fields === 'object' ? spec.patchTarget.fields : {}),
+						title: targetTitle,
+						modified: new Date(),
+					};
+					this.wiki.addTiddler(new $tw.Tiddler(nextFields));
+					modifiedAny = true;
+				}
+			}
+			if (spec.createTiddler && typeof spec.createTiddler === 'object') {
+				const newTitle = spec.createTiddler.title;
+				if (typeof newTitle === 'string' && newTitle.length > 0) {
+					const existing = this.wiki.getTiddler(newTitle);
+					const extraFields = typeof spec.createTiddler.fields === 'object' && spec.createTiddler.fields
+						? spec.createTiddler.fields
+						: spec.createTiddler;
+					const nextFields = {
+						...(existing ? existing.fields : { created: new Date() }),
+						...extraFields,
+						title: newTitle,
+						modified: new Date(),
+					};
+					delete nextFields.fields;
+					this.wiki.addTiddler(new $tw.Tiddler(nextFields));
+					modifiedAny = true;
+				}
+			}
+			return modifiedAny;
+		}
+
+		applyPendingWatcherPatches(pendingPatches) {
+			if (!Array.isArray(pendingPatches) || pendingPatches.length === 0) return;
+			for (const entry of pendingPatches) {
+				if (!entry || typeof entry.patchId !== 'string') continue;
+				if (this.appliedPatchIds.has(entry.patchId)) {
+					this.ackedPatchIds.add(entry.patchId);
+					continue;
+				}
+				this.appliedPatchIds.add(entry.patchId);
+				this.ackedPatchIds.add(entry.patchId);
+				if (entry.patch && typeof entry.patch === 'object') {
+					this.applySingleWatcherPatchSpec(entry.patch);
+					try {
+						$tw.hooks.invokeHook('th-pwa-watcher-action', entry);
+					} catch (e) {
+						console.error('Error in th-pwa-watcher-action hook:', e);
+					}
+				}
+			}
+		}
+
+		handleServiceWorkerPushClick(clickEvent) {
+			if (!clickEvent) return;
+			if (this.isReady()) {
+				this.drainPendingPushClicks();
+				this.sync(false);
+			}
+		}
+
+		async drainPendingPushClicks() {
+			if (!this.isReady() || typeof indexedDB !== 'object') return;
+			let clicks = [];
+			try {
+				const db = await this.openPushDb();
+				try {
+					clicks = await new Promise((resolve, reject) => {
+						const txn = db.transaction('state', 'readwrite');
+						const store = txn.objectStore('state');
+						const getReq = store.get('pendingClicks');
+						let result = [];
+						getReq.onsuccess = () => {
+							result = Array.isArray(getReq.result) ? getReq.result : [];
+							if (result.length > 0) {
+								store.delete('pendingClicks');
+							}
+						};
+						txn.oncomplete = () => resolve(result);
+						txn.onerror = () => reject(txn.error);
+					});
+				} finally {
+					db.close();
+				}
+			} catch (e) {
+				console.warn('Failed to drain pending push clicks:', e);
+				return;
+			}
+
+			for (const click of clicks) {
+				const action = click.action || 'default';
+				const data = click.data || {};
+				const actionSpec = data.actionPatches && typeof data.actionPatches === 'object'
+					? data.actionPatches[action]
+					: null;
+				if (actionSpec) {
+					this.applySingleWatcherPatchSpec(actionSpec);
+				}
+				const navTitle = actionSpec?.navigateTo || data.navigateTo || data.tiddlerTitle;
+				if (typeof navTitle === 'string' && navTitle.length > 0) {
+					try {
+						const story = new $tw.Story({ wiki: this.wiki });
+						story.navigateTiddler(navTitle);
+					} catch (e) {
+						console.warn('Could not navigate to notification target tiddler:', e);
+					}
+				}
+				try {
+					$tw.hooks.invokeHook('th-pwa-notification-action', click);
+				} catch (e) {
+					console.error('Error in th-pwa-notification-action hook:', e);
+				}
 			}
 		}
 
@@ -773,6 +1917,10 @@ Formatted with `deno fmt`.
 				}
 			}, 300);
 			this.openStartupStory(); // Old $:/DefaultTiddlers has been used
+			await this.persistPushKeyForServiceWorker();
+			await this.drainPendingPushClicks();
+			this.scheduleNotificationRuleSync();
+			this.scheduleWatcherSync();
 			this.backgroundSync();
 			return true;
 		}
@@ -802,12 +1950,15 @@ Formatted with `deno fmt`.
 				this.db = undefined;
 			}
 			$tw.syncer.isDirty = () => false; // skip the onbeforeunload
-			adb(indexedDB.deleteDatabase(`tiddlypwa:${location.pathname}`)).then((_) => location.reload())
+			Promise.all([
+				adb(indexedDB.deleteDatabase(`tiddlypwa:${location.pathname}`)),
+				adb(indexedDB.deleteDatabase(this.getPushDbName())).catch(() => {}),
+			]).then((_) => location.reload())
 				.catch((e) => this.logger.alert('Failed to delete database!', e));
 		}
 
 		async deriveKeysFromBasebits(basebits) {
-			const basekey = await crypto.subtle.importKey('raw', basebits, 'HKDF', false, ['deriveKey']);
+			const basekey = await crypto.subtle.importKey('raw', basebits, 'HKDF', false, ['deriveKey', 'deriveBits']);
 			this.enckeys = await Promise.all(
 				[...Array(8).keys()].map((i) =>
 					crypto.subtle.deriveKey(
@@ -831,6 +1982,56 @@ Formatted with `deno fmt`.
 				false,
 				['sign'],
 			);
+			this.pushKey = await crypto.subtle.deriveKey(
+				{ name: 'HKDF', hash: 'SHA-256', salt: utfenc.encode('tiddly.pwa.push'), info: new Uint8Array() },
+				basekey,
+				{ name: 'AES-GCM', length: 256 },
+				false,
+				['encrypt', 'decrypt'],
+			);
+			try {
+				const edSeed = new Uint8Array(
+					await crypto.subtle.deriveBits(
+						{
+							name: 'HKDF',
+							hash: 'SHA-256',
+							salt: utfenc.encode('tiddly.pwa.watchers.ed25519'),
+							info: new Uint8Array(),
+						},
+						basekey,
+						256,
+					),
+				);
+				const pkcs8Prefix = new Uint8Array([
+					0x30,
+					0x2e,
+					0x02,
+					0x01,
+					0x00,
+					0x30,
+					0x05,
+					0x06,
+					0x03,
+					0x2b,
+					0x65,
+					0x70,
+					0x04,
+					0x22,
+					0x04,
+					0x20,
+				]);
+				const pkcs8 = new Uint8Array(48);
+				pkcs8.set(pkcs8Prefix, 0);
+				pkcs8.set(edSeed, 16);
+				const tempKey = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, true, ['sign']);
+				const jwk = await crypto.subtle.exportKey('jwk', tempKey);
+				this.watcherPubKeyB64 = jwk.x;
+				this.watcherSignKey = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, false, ['sign']);
+			} catch (e) {
+				console.warn('Ed25519 WebCrypto key derivation unavailable in this browser:', e);
+				this.watcherPubKeyB64 = null;
+				this.watcherSignKey = null;
+			}
 		}
 
 		async unlockWithBiometrics(sessionRecord) {
@@ -970,6 +2171,9 @@ Formatted with `deno fmt`.
 					} else if (lastSession.enckeys && lastSession.mackey) {
 						this.enckeys = lastSession.enckeys;
 						this.mackey = lastSession.mackey;
+						this.pushKey = lastSession.pushKey || null;
+						this.watcherSignKey = lastSession.watcherSignKey || null;
+						this.watcherPubKeyB64 = lastSession.watcherPubKeyB64 || null;
 					}
 				}
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: this.enckeys ? 'yes' : 'no' });
@@ -1422,7 +2626,9 @@ Formatted with `deno fmt`.
 			}
 			if (
 				(tiddler.fields.type === 'application/json' && tiddler.fields['plugin-type']) ||
-				(tiddler.fields.type === 'application/javascript' && tiddler.fields['module-type'])
+				(tiddler.fields.type === 'application/javascript' &&
+					tiddler.fields['module-type'] &&
+					tiddler.fields['module-type'] !== 'pwa-watcher')
 			) {
 				if (!this.origSyncerIsDirty && $tw.syncer) {
 					const origIsDirty = $tw.syncer.isDirty.bind($tw.syncer);
@@ -1695,6 +2901,7 @@ Formatted with `deno fmt`.
 			}
 			let resp;
 			let respJson;
+			const ackPatchesPayload = this.ackedPatchIds.size > 0 ? [...this.ackedPatchIds] : undefined;
 			try {
 				resp = await fetch(url, {
 					signal: syncSignal,
@@ -1712,6 +2919,7 @@ Formatted with `deno fmt`.
 						now: new Date(), // only for a desync check
 						lastSync,
 						clientChanges,
+						ackPatches: ackPatchesPayload,
 					}),
 				});
 				if (!resp.ok) {
@@ -1723,6 +2931,11 @@ Formatted with `deno fmt`.
 					);
 				}
 				respJson = await resp.json();
+				if (ackPatchesPayload) {
+					for (const pId of ackPatchesPayload) {
+						this.ackedPatchIds.delete(pId);
+					}
+				}
 			} catch (e) {
 				if (e.name === 'AbortError') throw e;
 				if (e.message && Object.values(knownErrors).includes(e.message)) throw e;
@@ -1731,7 +2944,7 @@ Formatted with `deno fmt`.
 				if (syncTimeoutTimer) clearTimeout(syncTimeoutTimer);
 			}
 			const serverTimeHdr = resp.headers.get('x-server-time');
-			const { serverChanges, appEtag, conflicts, successes } = respJson;
+			const { serverChanges, appEtag, conflicts, successes, pendingPatches } = respJson;
 			const conflictSet = new Set(conflicts || []);
 			const successMap = new Map();
 			if (successes) {
@@ -2017,6 +3230,9 @@ Formatted with `deno fmt`.
 					navigator.serviceWorker.controller.postMessage({ op: 'update', url: req.url });
 				}
 			}
+			if (pendingPatches && Array.isArray(pendingPatches) && pendingPatches.length > 0) {
+				this.applyPendingWatcherPatches(pendingPatches);
+			}
 			this.logger.log('sync done', url);
 			if (serverTimeHdr) {
 				const sDate = new Date(serverTimeHdr);
@@ -2074,6 +3290,9 @@ Formatted with `deno fmt`.
 					this.afterSyncOnceHook();
 					delete this.afterSyncOnceHook;
 				}
+				await this.drainPendingPushClicks();
+				this.scheduleNotificationRuleSync();
+				this.scheduleWatcherSync();
 			} finally {
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWASyncing', text: 'no' });
 				$tw.utils.removeClass(document.body, 'tiddlypwa-syncing');
