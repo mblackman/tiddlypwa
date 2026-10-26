@@ -292,6 +292,14 @@ Formatted with `deno fmt`.
 							this.startRealtimeMonitor();
 						}
 					}, 1000);
+				} else if (document.visibilityState === 'hidden' && this.isReady() && navigator.onLine) {
+					clearTimeout(this.ruleSyncTimer);
+					this.syncNotificationRules().catch(() => {});
+					if (this.syncTimer) {
+						clearTimeout(this.syncTimer);
+						this.syncTimer = null;
+						this.sync(false);
+					}
 				}
 			});
 
@@ -918,7 +926,28 @@ Formatted with `deno fmt`.
 				baseMs = localDate.getTime();
 			} else if (/^\d{14,17}$/.test(str)) {
 				const parsed = $tw.utils.parseDate(str);
-				if (parsed instanceof Date) {
+				if (parsed instanceof Date && !Number.isNaN(parsed.getTime())) {
+					// Projectify and TW end-of-day dates use local 23:59:59.999 as a date-only sentinel.
+					// If the timestamp has a specific time of day (not 23:59:59.999), fire at that exact time!
+					const isEndOfDaySentinel = parsed.getHours() === 23 &&
+						parsed.getMinutes() === 59 &&
+						parsed.getSeconds() === 59 &&
+						parsed.getMilliseconds() === 999;
+					if (!isEndOfDaySentinel) {
+						return Math.floor(parsed.getTime());
+					}
+					if (Number(offsetMinutes) === 0 && defaultTimeStr && String(defaultTimeStr).trim() !== '23:59') {
+						const localDate = new Date(
+							parsed.getFullYear(),
+							parsed.getMonth(),
+							parsed.getDate(),
+							hours,
+							minutes,
+							0,
+							0,
+						);
+						return Math.floor(localDate.getTime());
+					}
 					baseMs = parsed.getTime();
 				}
 			} else if (/^\d{10,13}$/.test(str)) {
@@ -981,12 +1010,12 @@ Formatted with `deno fmt`.
 			}
 		}
 
-		scheduleNotificationRuleSync() {
+		scheduleNotificationRuleSync(delayMs = 250) {
 			if (!this.isReady() || !navigator.onLine) return;
 			clearTimeout(this.ruleSyncTimer);
 			this.ruleSyncTimer = setTimeout(() => {
 				this.syncNotificationRules().catch((e) => console.warn('Failed to sync notification rules:', e));
-			}, 1200);
+			}, delayMs);
 		}
 
 		async syncNotificationRules() {
@@ -1653,7 +1682,7 @@ Formatted with `deno fmt`.
 			}
 		}
 
-		async drainPendingPushClicks() {
+		async drainPendingPushClicks(runAfterSync = false) {
 			if (!this.isReady() || typeof indexedDB !== 'object') return;
 			let clicks = [];
 			try {
@@ -1681,16 +1710,37 @@ Formatted with `deno fmt`.
 				return;
 			}
 
+			if (Array.isArray(this.deferredPushClicks) && this.deferredPushClicks.length > 0 && runAfterSync) {
+				clicks = [...this.deferredPushClicks, ...clicks];
+				this.deferredPushClicks = [];
+			}
+
 			for (const click of clicks) {
 				const action = click.action || 'default';
 				const data = click.data || {};
 				const actionSpec = data.actionPatches && typeof data.actionPatches === 'object'
 					? data.actionPatches[action]
 					: null;
+				const navTitle = actionSpec?.navigateTo || data.navigateTo || data.tiddlerTitle;
+
+				// If the target tiddler was created on another device and hasn't synced to this device yet,
+				// defer the click action until the ongoing sync completes so navigation and "Mark Done" succeed.
+				if (
+					!runAfterSync &&
+					navigator.onLine &&
+					typeof navTitle === 'string' &&
+					navTitle.length > 0 &&
+					!this.wiki.tiddlerExists(navTitle) &&
+					!this.wiki.isShadowTiddler(navTitle)
+				) {
+					if (!this.deferredPushClicks) this.deferredPushClicks = [];
+					this.deferredPushClicks.push(click);
+					continue;
+				}
+
 				if (actionSpec) {
 					this.applySingleWatcherPatchSpec(actionSpec);
 				}
-				const navTitle = actionSpec?.navigateTo || data.navigateTo || data.tiddlerTitle;
 				if (typeof navTitle === 'string' && navTitle.length > 0) {
 					try {
 						const story = new $tw.Story({ wiki: this.wiki });
@@ -2230,9 +2280,29 @@ Formatted with `deno fmt`.
 								this.db.transaction('metadata', 'readwrite').objectStore('metadata').put({ salt: this.salt });
 							}
 							if (pairToken) {
-								const serverUrl = new URL('tid.dly', document.location).href;
+								let serverUrl = new URL('/tid.dly', document.location).href;
+								try {
+									const bResp = await fetch('bootstrap.json', { cache: 'no-store' });
+									if (bResp.ok) {
+										const bData = await bResp.json();
+										if (typeof bData.endpoint === 'string' && bData.endpoint) {
+											serverUrl = new URL(bData.endpoint, document.location).href;
+										}
+									}
+								} catch (_e) {
+									// Fallback to /tid.dly
+								}
+								const tx = this.db.transaction('syncservers', 'readwrite');
+								const store = tx.objectStore('syncservers');
+								const existingServers = await adb(store.getAll());
+								const existingKeys = await adb(store.getAllKeys());
+								for (let i = 0; i < existingServers.length; i++) {
+									if (existingServers[i].token === pairToken) {
+										await adb(store.delete(existingKeys[i]));
+									}
+								}
 								await adb(
-									this.db.transaction('syncservers', 'readwrite').objectStore('syncservers').put({
+									store.put({
 										url: serverUrl,
 										token: pairToken,
 										lastSync: new Date(0),
@@ -3324,7 +3394,10 @@ Formatted with `deno fmt`.
 					this.afterSyncOnceHook();
 					delete this.afterSyncOnceHook;
 				}
-				await this.drainPendingPushClicks();
+				if (Array.isArray(this.deferredPushClicks) && this.deferredPushClicks.length > 0) {
+					await this.firstChange();
+				}
+				await this.drainPendingPushClicks(true);
 				this.scheduleNotificationRuleSync();
 				this.scheduleWatcherSync();
 			} finally {
@@ -3353,7 +3426,10 @@ Formatted with `deno fmt`.
 			if (!navigator.onLine || !this.isReady()) return;
 			// debounced to handle multiple saves in quick succession
 			clearTimeout(this.syncTimer);
-			this.syncTimer = setTimeout(() => this.sync(false), 1000);
+			this.syncTimer = setTimeout(() => {
+				this.syncTimer = null;
+				this.sync(false);
+			}, 1000);
 		}
 	}
 

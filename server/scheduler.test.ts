@@ -248,6 +248,24 @@ Deno.test('Tier 2 date parsing: date-only local time + default-time vs full time
 			const day = Number(m[3]);
 			const localDate = new Date(year, month - 1, day, hours, minutes, 0, 0);
 			baseMs = localDate.getTime();
+		} else if (/^\d{14,17}$/.test(str)) {
+			// Minimal TW 17-digit UTC parser (YYYYMMDDHHmmssSSS)
+			const y = Number(str.slice(0, 4));
+			const mo = Number(str.slice(4, 6)) - 1;
+			const d = Number(str.slice(6, 8));
+			const hh = Number(str.slice(8, 10));
+			const mm = Number(str.slice(10, 12));
+			const ss = Number(str.slice(12, 14));
+			const ms = str.length === 17 ? Number(str.slice(14, 17)) : 0;
+			const parsed = new Date(Date.UTC(y, mo, d, hh, mm, ss, ms));
+			const isEndOfDaySentinel = parsed.getHours() === 23 &&
+				parsed.getMinutes() === 59 &&
+				parsed.getSeconds() === 59 &&
+				parsed.getMilliseconds() === 999;
+			if (!isEndOfDaySentinel) {
+				return Math.floor(parsed.getTime());
+			}
+			baseMs = parsed.getTime();
 		} else if (/^\d{10,13}$/.test(str)) {
 			const num = Number(str);
 			baseMs = str.length === 10 ? num * 1000 : num;
@@ -273,4 +291,20 @@ Deno.test('Tier 2 date parsing: date-only local time + default-time vs full time
 	// Full ISO timestamp ignores default-time and applies offset-minutes directly
 	const isoMs = Date.parse('2026-11-15T18:00:00Z');
 	assertEquals(parseRuleTriggerAt('2026-11-15T18:00:00Z', '09:00', 15), isoMs + 15 * 60 * 1000);
+
+	// TiddlyWiki 17-digit end-of-day sentinel (23:59:59.999 local) applies offset-minutes (-719 -> 12:00:59.999 local)
+	const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+	const toTw17 = (dt: Date) =>
+		`${dt.getUTCFullYear()}${pad(dt.getUTCMonth() + 1)}${pad(dt.getUTCDate())}${pad(dt.getUTCHours())}${
+			pad(dt.getUTCMinutes())
+		}${pad(dt.getUTCSeconds())}${pad(dt.getUTCMilliseconds(), 3)}`;
+	const localEndOfDay = new Date(2026, 10, 15, 23, 59, 59, 999);
+	assertEquals(
+		parseRuleTriggerAt(toTw17(localEndOfDay), '12:00', -719),
+		localEndOfDay.getTime() - 719 * 60 * 1000,
+	);
+
+	// TiddlyWiki 17-digit timestamp with specific local time (e.g. 15:45:00.000) fires at that exact time (ignoring offset)
+	const localSpecific = new Date(2026, 10, 15, 15, 45, 0, 0);
+	assertEquals(parseRuleTriggerAt(toTw17(localSpecific), '12:00', -719), localSpecific.getTime());
 });

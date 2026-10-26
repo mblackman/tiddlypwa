@@ -57,13 +57,24 @@ Deno.test('basic syncing works', async () => {
 	const tok = await createWiki();
 	const s1date = new Date();
 	// Basic write, with and without an mtime
-	const res = await api({ op: 'sync', token: tok, authcode: 'test', now: s1date, lastSync: new Date(0), clientChanges: [
-		{ thash: 'T3dP', ct: '1111' },
-		{ thash: 'VXdV', ct: '11111111', mtime: new Date(69) },
-	]});
+	const res = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: s1date,
+		lastSync: new Date(0),
+		clientChanges: [
+			{ thash: 'T3dP', ct: '1111' },
+			{ thash: 'VXdV', ct: '11111111', mtime: new Date(69) },
+		],
+	});
 	assertEquals(
 		res,
-		{ appEtag: null, serverChanges: [], successes: [{ thash: 'T3dP', mtime: res.successes![0].mtime }, { thash: 'VXdV', mtime: res.successes![1].mtime }] },
+		{
+			appEtag: null,
+			serverChanges: [],
+			successes: [{ thash: 'T3dP', mtime: res.successes![0].mtime }, { thash: 'VXdV', mtime: res.successes![1].mtime }],
+		},
 	);
 	const t3mtime = res.successes![0].mtime;
 	const vxmtime = res.successes![1].mtime;
@@ -91,7 +102,7 @@ Deno.test('basic syncing works', async () => {
 		mtime: vxmtime,
 		deleted: false,
 	});
-	
+
 	const read420Res = await sync(tok, 'test', new Date(), new Date(420), []);
 	assertEquals(read420Res.serverChanges.length, 2);
 	await deleteWiki(tok);
@@ -100,7 +111,14 @@ Deno.test('basic syncing works', async () => {
 Deno.test('syncing a ton of tiddlers works', async () => {
 	const tok = await createWiki();
 	const s1date = new Date();
-	const writeRes = await api({ op: 'sync', token: tok, authcode: 'test', now: s1date, lastSync: new Date(0), clientChanges: [...Array(20).keys()].map((_, i) => ({ thash: btoa(i.toString()), ct: 'T3dp' })) });
+	const writeRes = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: s1date,
+		lastSync: new Date(0),
+		clientChanges: [...Array(20).keys()].map((_, i) => ({ thash: btoa(i.toString()), ct: 'T3dp' })),
+	});
 	assertEquals(writeRes.serverChanges, []);
 	assertEquals(writeRes.successes?.length, 20);
 
@@ -113,10 +131,17 @@ Deno.test('storing large data works', async () => {
 	const tok = await createWiki();
 	const s1date = new Date();
 	const bigdata = Array(5592407).join('A') + '==';
-	const writeRes = await api({ op: 'sync', token: tok, authcode: 'test', now: s1date, lastSync: new Date(0), clientChanges: [{ thash: 'T3dP', ct: bigdata }] });
+	const writeRes = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: s1date,
+		lastSync: new Date(0),
+		clientChanges: [{ thash: 'T3dP', ct: bigdata }],
+	});
 	assertEquals(writeRes.serverChanges, []);
 	assertEquals(writeRes.successes?.length, 1);
-	
+
 	const readRes = await sync(tok, 'test', new Date(), new Date(420), []);
 	assertEquals(readRes.serverChanges.length, 1);
 	await deleteWiki(tok);
@@ -224,9 +249,9 @@ Deno.test('schema migration from version 1 to 2 preserves data and allows multi-
 	// Run migration
 	ds.migrate();
 
-	// Verify user_version is now 2
+	// Verify user_version is now 3
 	const ver = ds.query('PRAGMA user_version')[0][0] as number;
-	assertEquals(ver, 2);
+	assertEquals(ver, 3);
 
 	// Verify migrated row exists
 	const rows = [...ds.tiddlersChangedSince('wiki1', new Date(0))];
@@ -363,15 +388,29 @@ Deno.test('concurrent writes with stale baseMtime trigger conflict and stream ca
 	const time2 = new Date(3000);
 
 	// Initial commit: V0 created at time0
-	const initResRaw = await api({ op: 'sync', token: tok, authcode: 'test', now: new Date(), lastSync: new Date(0), clientChanges: [
-		{ thash: sharedThash, ct: 'dmVyc2lvbjA=', mtime: time0 },
-	]});
+	const initResRaw = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: new Date(),
+		lastSync: new Date(0),
+		clientChanges: [
+			{ thash: sharedThash, ct: 'dmVyc2lvbjA=', mtime: time0 },
+		],
+	});
 	const time0_server = new Date(initResRaw.successes![0].mtime);
 
 	// Device A updates Document to V1
-	const devAResRaw = await api({ op: 'sync', token: tok, authcode: 'test', now: new Date(), lastSync: time0_server, clientChanges: [
-		{ thash: sharedThash, ct: 'dmVyc2lvbjE=', mtime: time1, baseMtime: time0_server },
-	]});
+	const devAResRaw = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: new Date(),
+		lastSync: time0_server,
+		clientChanges: [
+			{ thash: sharedThash, ct: 'dmVyc2lvbjE=', mtime: time1, baseMtime: time0_server },
+		],
+	});
 	const time1_server = new Date(devAResRaw.successes![0].mtime);
 
 	// Device B concurrently attempts to update Document to V2 based on V0 (baseMtime = time0_server)
@@ -391,9 +430,16 @@ Deno.test('concurrent writes with stale baseMtime trigger conflict and stream ca
 
 	// Device B resolves conflict and syncs V3 based on Device A's V1 (baseMtime = time1_server)
 	const time3 = new Date(4000);
-	const devBResolved = await api({ op: 'sync', token: tok, authcode: 'test', now: new Date(), lastSync: time1_server, clientChanges: [
-		{ thash: sharedThash, ct: 'dmVyc2lvbjM=', mtime: time3, baseMtime: time1_server },
-	]});
+	const devBResolved = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: new Date(),
+		lastSync: time1_server,
+		clientChanges: [
+			{ thash: sharedThash, ct: 'dmVyc2lvbjM=', mtime: time3, baseMtime: time1_server },
+		],
+	});
 	assertEquals(devBResolved.serverChanges, []);
 
 	// Verify server now has V3
@@ -466,7 +512,7 @@ Deno.test('wiki asset serving: unseeded wiki falls back to bundled default app',
 	});
 	const brResp = await app.handle(brReq);
 	if (brResp.status === 404) {
-		console.log("BRRESP 404!", await brResp.clone().text());
+		console.log('BRRESP 404!', await brResp.clone().text());
 	}
 	assertEquals(brResp.status, 200);
 	assertEquals(brResp.headers.get('content-encoding'), 'br');

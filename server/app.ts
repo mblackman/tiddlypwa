@@ -18,7 +18,7 @@ const utfenc = new TextEncoder();
 
 // Pending: https://github.com/denoland/deno/issues/19160
 
-function route(methods: string[], pathname: string) {
+function route(methods: string[], pathname: string, skipIf?: (groups: Record<string, string | undefined>) => boolean) {
 	const pat = new URLPattern({ pathname });
 	const methodSet = new Set(methods);
 	const allow = methods.join(', ');
@@ -26,6 +26,7 @@ function route(methods: string[], pathname: string) {
 		return function (this: any, req: Request) {
 			const match = pat.exec(req.url);
 			if (!match) return null;
+			if (skipIf && skipIf(match.pathname.groups)) return null;
 			if (!methodSet.has(req.method)) return new Response(null, { status: 405, headers: { allow } });
 			return orig.apply(this, [req, match.pathname.groups]);
 		};
@@ -973,7 +974,7 @@ export class TiddlyPWASyncApp {
 		});
 	}
 
-	@route(['GET', 'HEAD', 'OPTIONS'], '/:halftoken/:filename')
+	@route(['GET', 'HEAD', 'OPTIONS'], '/:halftoken/:filename', (g) => g.filename === 'tid.dly')
 	handleAppFile(req: Request, { halftoken, filename }: Record<string, string>) {
 		if (!halftoken || halftoken.length < 21 || !/^[A-Za-z0-9_-]+$/.test(halftoken)) {
 			return Response.json({ error: 'EEXIST' }, { headers: respHdrs, status: 404 });
@@ -1033,7 +1034,7 @@ export class TiddlyPWASyncApp {
 		return new Response(body as unknown as BodyInit, { headers });
 	}
 
-	@route(['GET', 'POST', 'OPTIONS'], '/tid.dly')
+	@route(['GET', 'POST', 'OPTIONS'], '{/:halftoken}?/tid.dly')
 	async handleApiEndpoint(req: Request) {
 		if (req.method === 'OPTIONS') {
 			return this.preflightResp('POST, GET, OPTIONS');
