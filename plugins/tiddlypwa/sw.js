@@ -89,23 +89,37 @@ async function decryptPushEnvelope(ivB64, ctB64) {
 
 async function fromNetCaching(req, cacheResp) {
 	try {
-		// "preflight" for letting the server wake up if it's on a free service that suspends instances:
-		await fetch(req.url, { method: 'OPTIONS', cache: 'no-cache' }).catch(() => {});
-		const requestObj = new Request(req);
-		const response = await fetch(requestObj, { cache: 'no-cache' });
+		const etagOld = cacheResp ? stripWeakEtag(cacheResp.headers.get('etag')) : null;
+		let response;
+		if (etagOld) {
+			// Background revalidation of a cached copy: a conditional request lets the server answer 304
+			// instead of re-sending (and us re-writing) the whole multi-megabyte app file on every launch.
+			// Setting If-None-Match bypasses the HTTP cache, so a 304 reaches us as-is.
+			response = await fetch(req.url, {
+				headers: { 'if-none-match': etagOld },
+				cache: 'no-store',
+				credentials: 'same-origin',
+			});
+			if (response.status === 304) return cacheResp;
+		} else {
+			// "preflight" for letting the server wake up if it's on a free service that suspends instances:
+			await fetch(req.url, { method: 'OPTIONS', cache: 'no-cache' }).catch(() => {});
+			response = await fetch(new Request(req), { cache: 'no-cache' });
+		}
 		if (response.ok) {
 			const ctype = response.headers.get('content-type') || '';
 			if (
-				(requestObj.mode === 'navigate' || requestObj.destination === 'document' || requestObj.url.endsWith('.html')) &&
+				(req.mode === 'navigate' || req.destination === 'document' || req.url.endsWith('.html')) &&
 				!ctype.includes('text/html')
 			) {
 				return cacheResp || response;
 			}
 			const etagNew = stripWeakEtag(response.headers.get('etag'));
-			const etagOld = cacheResp ? stripWeakEtag(cacheResp.headers.get('etag')) : null;
 			const changed = cacheResp && etagNew && etagOld && etagNew !== etagOld;
-			const cache = await caches.open(CACHE);
-			await cache.put(req, response.clone());
+			if (!cacheResp || changed || !etagNew) {
+				const cache = await caches.open(CACHE);
+				await cache.put(req, response.clone());
+			}
 			if (changed) {
 				for (const client of await clients.matchAll()) {
 					client.postMessage({ op: 'refresh' });
@@ -123,7 +137,10 @@ async function fromCache(evt) {
 	const cache = await caches.open(CACHE);
 	const response = await cache.match(evt.request, { ignoreSearch: true });
 	if (response) {
-		evt.waitUntil(fromNetCaching(evt.request, response.clone()));
+		// Only the headers (ETag) are needed for revalidation, so pass a body-less copy: an unread
+		// clone() of a multi-megabyte response would make the browser buffer the whole body twice.
+		const headersOnly = new Response(null, { status: response.status, headers: response.headers });
+		evt.waitUntil(fromNetCaching(evt.request, headersOnly).catch(() => {}));
 		return response;
 	} else {
 		return await fromNetCaching(evt.request);

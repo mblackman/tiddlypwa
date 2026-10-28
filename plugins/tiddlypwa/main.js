@@ -202,6 +202,18 @@ Formatted with `deno fmt`.
 	class PWAStorage {
 		supportsLazyLoading = true;
 		modal = new BootstrapModal();
+		// Resolved once stored tiddlers are loaded (or interactive UI is needed); boot-gate.js waits on it
+		// before letting the core "story" and "render" startup tasks run.
+		bootReleased = false;
+		bootGate = new Promise((resolve) => {
+			this._resolveBootGate = resolve;
+		});
+
+		releaseBoot() {
+			if (this.bootReleased) return;
+			this.bootReleased = true;
+			this._resolveBootGate();
+		}
 
 		constructor(options) {
 			this.wiki = options.wiki;
@@ -1948,51 +1960,61 @@ Formatted with `deno fmt`.
 			const toDecrypt = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').getAll());
 			this.logger.log('Titles to read: ', toDecrypt.length);
 			console.time('initial decrypt');
-			let cur = 0;
+			const decryptOne = async ({ thash, iv, ct, sbiv, sbct }) => {
+				// not isReady yet, can safely addTiddler
+				const tid = await this.parseEncryptedTiddler({ thash, ct, iv });
+				if (isDraftTiddler(tid)) {
+					this.db.transaction('tiddlers', 'readwrite').objectStore('tiddlers').delete(thash);
+					return null;
+				}
+				if (sbiv && sbct) {
+					if (mustEagerLoad(tid)) {
+						tid.text = await decodeData(
+							await crypto.subtle.decrypt({ name: 'AES-GCM', iv: sbiv }, this.enckey(thash), sbct),
+						);
+					} else tid._is_skinny = true; // Lazy-load separate body
+				}
+				return tid;
+			};
+			const records = toDecrypt.filter((r) => !r.deleted);
 			const toAdd = [];
-			for (const { thash, iv, ct, sbiv, sbct, deleted } of toDecrypt) {
+			// Decrypt the first record alone so a wrong key fails fast, then decrypt the rest concurrently
+			// in batches: WebCrypto and DecompressionStream work happens off the main thread, so keeping
+			// several operations in flight avoids paying a full round trip per tiddler.
+			const BATCH = 32;
+			for (let i = 0; i < records.length;) {
+				const batch = records.slice(i, i === 0 ? 1 : i + BATCH);
 				try {
-					if (deleted) continue;
-					// not isReady yet, can safely addTiddler
-					const tid = await this.parseEncryptedTiddler({ thash, ct, iv });
-					if (isDraftTiddler(tid)) {
-						this.db.transaction('tiddlers', 'readwrite').objectStore('tiddlers').delete(thash);
-						continue;
-					}
-					if (sbiv && sbct) {
-						if (mustEagerLoad(tid)) {
-							tid.text = await decodeData(
-								await crypto.subtle.decrypt({ name: 'AES-GCM', iv: sbiv }, this.enckey(thash), sbct),
-							);
-						} else tid._is_skinny = true; // Lazy-load separate body
-					}
-					toAdd.push(tid);
-					if (cur % 100 == 0) {
-						this.modal.setFeedback(`<p>Decrypting tiddlers… (${Math.round(100 * cur / toDecrypt.length)}%)</p>`);
-					}
-					cur += 1;
+					for (const tid of await Promise.all(batch.map(decryptOne))) if (tid) toAdd.push(tid);
 				} catch (e) {
-					this.logger.log('Title decryption failed for:', await b64enc(thash));
+					this.logger.log('Title decryption failed in batch starting with:', await b64enc(batch[0].thash));
 					console.error(e);
 					return false;
 				}
+				i += batch.length;
+				this.modal?.setFeedback(`<p>Decrypting tiddlers… (${Math.round(100 * i / records.length)}%)</p>`);
 			}
 			console.timeEnd('initial decrypt');
 			console.time('initial add');
-			this.modal.setFeedback(`<p>Loading tiddlers…</p>`);
+			this.modal?.setFeedback(`<p>Loading tiddlers…</p>`);
 			// Waiting for one change event prevents unlocking before the adding is actually done
 			const themHandlers = toAdd.length > 0 ? this.firstChange() : Promise.resolve();
 			// Adds are batched all together SYNCHRONOUSLY to prevent event handlers from running on every add!
 			// storeTiddler is basically addTiddler but store info to prevent syncer from creating save tasks later
 			for (const tid of toAdd) $tw.syncer.storeTiddler(tid);
+			this.wiki.addTiddler({
+				title: '$:/status/TiddlyPWAConflictsCount',
+				text: String(this.wiki.filterTiddlers('[tag[$:/tags/TiddlyPWA/Conflict]]').length),
+			});
+			// If the page was already rendered from the app file (boot gate released early), the old
+			// $:/DefaultTiddlers has been used, so reopen the startup story within this same change batch.
+			// Otherwise the core "story" startup task will open the right tiddlers when the gate is released.
+			if (this.bootReleased) this.openStartupStory();
 			await themHandlers; // ha
 			console.timeEnd('initial add');
 			this.ready = true;
-			const initialConflictCount = this.wiki.filterTiddlers('[tag[$:/tags/TiddlyPWA/Conflict]]').length;
-			this.wiki.addTiddler({
-				title: '$:/status/TiddlyPWAConflictsCount',
-				text: String(initialConflictCount),
-			});
+			// Let the core "story" and "render" startup tasks run now, rendering the page once with real content.
+			this.releaseBoot();
 			setTimeout(() => {
 				try {
 					$tw.__update_tiddlypwa_manifest__();
@@ -2000,9 +2022,10 @@ Formatted with `deno fmt`.
 					console.error(e);
 				}
 			}, 300);
-			this.openStartupStory(); // Old $:/DefaultTiddlers has been used
-			await this.persistPushKeyForServiceWorker();
-			await this.drainPendingPushClicks();
+			// Not needed to show the wiki, so keep them off the unlock path
+			this.persistPushKeyForServiceWorker()
+				.then(() => this.drainPendingPushClicks())
+				.catch((e) => console.error(e));
 			this.scheduleNotificationRuleSync();
 			this.scheduleWatcherSync();
 			this.backgroundSync();
@@ -2310,25 +2333,7 @@ Formatted with `deno fmt`.
 								);
 								this.backgroundSync();
 							}
-							await this.reflectSyncServers();
-							await this.reflectStorageInfo();
-							this.wiki.addTiddler({
-								title: '$:/status/TiddlyPWASalt',
-								text: await b64enc(this.salt),
-							});
-							this.wiki.addTiddler({
-								title: '$:/status/TiddlyPWABiometricAvailable',
-								text: (typeof window !== 'undefined' && window.PublicKeyCredential && window.isSecureContext)
-									? 'yes'
-									: 'no',
-							});
-							this.wiki.addTiddler({
-								title: '$:/status/TiddlyPWABiometricConfigured',
-								text: this.biometricSession ? 'yes' : 'no',
-							});
-							await this.updatePairUrl();
-							this.initServiceWorker();
-							if (freshDb && navigator.storage) navigator.storage.persist().then(() => this.reflectStorageInfo());
+							this.afterUnlock(freshDb);
 							return;
 						} else {
 							this.enckeys = null;
@@ -2345,6 +2350,8 @@ Formatted with `deno fmt`.
 			}
 			if (this.biometricSession && !this.enckeys) {
 				let bioUnlocked = false;
+				// Waiting on the user from here on: let the page render behind the prompt meanwhile
+				this.releaseBoot();
 				await new Promise((resolve) => {
 					const doBiometric = async () => {
 						this.modal.setFeedback('<p>Authenticating with biometrics…</p>');
@@ -2373,24 +2380,7 @@ Formatted with `deno fmt`.
 					);
 				});
 				if (bioUnlocked) {
-					await this.reflectSyncServers();
-					await this.reflectStorageInfo();
-					this.wiki.addTiddler({
-						title: '$:/status/TiddlyPWASalt',
-						text: await b64enc(this.salt),
-					});
-					this.wiki.addTiddler({
-						title: '$:/status/TiddlyPWABiometricAvailable',
-						text: (typeof window !== 'undefined' && window.PublicKeyCredential && window.isSecureContext)
-							? 'yes'
-							: 'no',
-					});
-					this.wiki.addTiddler({
-						title: '$:/status/TiddlyPWABiometricConfigured',
-						text: 'yes',
-					});
-					await this.updatePairUrl();
-					this.initServiceWorker();
+					this.afterUnlock(false);
 					return;
 				}
 			}
@@ -2541,6 +2531,8 @@ Formatted with `deno fmt`.
 					this.modal.setBody('<p>Welcome back! Please enter your password.</p>');
 					this.modal.showForm();
 				}
+				// Waiting on the user from here on: let the page render behind the prompt meanwhile
+				this.releaseBoot();
 				const AW = require('$:/plugins/mblackman/tiddlypwa/argon2ian.js').ArgonWorker;
 				const argon = new AW();
 				await argon.ready;
@@ -2579,25 +2571,34 @@ Formatted with `deno fmt`.
 				this.modal.showFormDelayed(500, true);
 				await this.initialRead();
 			}
-			await this.reflectSyncServers();
-			await this.reflectStorageInfo();
-			this.wiki.addTiddler({
-				title: '$:/status/TiddlyPWASalt',
-				text: await b64enc(this.salt),
-			});
-			this.wiki.addTiddler({
-				title: '$:/status/TiddlyPWABiometricAvailable',
-				text: (typeof window !== 'undefined' && window.PublicKeyCredential && window.isSecureContext) ? 'yes' : 'no',
-			});
-			this.wiki.addTiddler({
-				title: '$:/status/TiddlyPWABiometricConfigured',
-				text: this.biometricSession ? 'yes' : 'no',
-			});
-			await this.updatePairUrl();
+			this.afterUnlock(freshDb);
+		}
+
+		// Closes the unlock modal right away; the status reflections below only feed the settings UI,
+		// so they run in the background instead of keeping the wiki hidden.
+		afterUnlock(freshDb) {
 			if (this.modal) {
 				this.modal.close();
 				delete this.modal;
 			}
+			this.releaseBoot();
+			(async () => {
+				await this.reflectSyncServers();
+				await this.reflectStorageInfo();
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWASalt',
+					text: await b64enc(this.salt),
+				});
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWABiometricAvailable',
+					text: (typeof window !== 'undefined' && window.PublicKeyCredential && window.isSecureContext) ? 'yes' : 'no',
+				});
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWABiometricConfigured',
+					text: this.biometricSession ? 'yes' : 'no',
+				});
+				await this.updatePairUrl();
+			})().catch((e) => console.error(e));
 			this.initServiceWorker(); // don't await
 			if (freshDb && navigator.storage) navigator.storage.persist().then(() => this.reflectStorageInfo());
 		}
@@ -2614,7 +2615,7 @@ Formatted with `deno fmt`.
 			).catch((e) => {
 				console.error(e);
 				cb(e);
-			});
+			}).finally(() => this.releaseBoot()); // whatever happened (docs mode, errors), never keep the page unrendered
 		}
 
 		getTiddlerInfo(_tiddler) {
