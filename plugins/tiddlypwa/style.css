@@ -1,55 +1,364 @@
-/*\
-title: $:/plugins/mblackman/tiddlypwa/style.css
-tags: $:/tags/Stylesheet
+\rules only filteredtranscludeinline transcludeinline macrodef macrocallinline
+/* Licensed under 0BSD, see license.tid. */
 
-Licensed under 0BSD, see license.tid.
-\*/
+:where(:root, .tc-page-container, .tiddlypwa-modal-wrapper) {
+	color-scheme: light dark;
+	--tpwa-bg: var(--suite-bg-canvas, var(--mn-bg-app, var(--tpc-page-background, <<colour page-background>>)));
+	--tpwa-surface: var(--suite-surface-primary, var(--mn-bg-surface, var(--tpc-tiddler-background, <<colour tiddler-background>>)));
+	--tpwa-fg: var(--suite-fg-primary, var(--mn-fg-primary, var(--tpc-foreground, <<colour foreground>>)));
+	--tpwa-muted-raw: var(--tpc-muted-foreground, <<colour muted-foreground>>);
+	--tpwa-muted: var(--suite-fg-muted, var(--mn-fg-muted, color-mix(in oklab, var(--tpwa-fg) 60%, var(--tpwa-muted-raw))));
+	--tpwa-accent: var(--suite-accent, var(--mn-accent, var(--tpc-primary, <<colour primary>>)));
+	--tpwa-card-bg: var(--suite-surface-card, color-mix(in oklab, var(--tpwa-surface) 95%, var(--tpwa-fg) 5%));
+	--tpwa-subtle-bg: var(--suite-surface-subtle, color-mix(in oklab, var(--tpwa-surface) 91%, var(--tpwa-fg) 9%));
+	--tpwa-border: var(--suite-border-subtle, color-mix(in oklab, var(--tpwa-fg) 13%, transparent));
+	--tpwa-border-control: var(--suite-border-control, color-mix(in oklab, var(--tpwa-fg) 46%, var(--tpwa-surface)));
+	--tpwa-danger-fg: var(--suite-status-danger-fg, color-mix(in oklab, #ef4444 78%, var(--tpwa-fg)));
+	--tpwa-danger-bg: var(--suite-status-danger-bg, color-mix(in oklab, #ef4444 12%, var(--tpwa-surface)));
+	--tpwa-danger-border: var(--suite-status-danger-border, color-mix(in oklab, #ef4444 32%, transparent));
+	--tpwa-info-fg: var(--suite-status-info-fg, color-mix(in oklab, var(--tpwa-accent) 78%, var(--tpwa-fg)));
+	--tpwa-info-bg: var(--suite-status-info-bg, color-mix(in oklab, var(--tpwa-accent) 12%, var(--tpwa-surface)));
+	--tpwa-info-border: var(--suite-status-info-border, color-mix(in oklab, var(--tpwa-accent) 30%, transparent));
+}
 
 .tc-modal-backdrop {
-	background: <<colour page-background>>;
-	opacity: 0.9;
+	background: var(--tpwa-bg);
+	opacity: 0.92;
 }
+
 .tc-modal-wrapper {
-	backdrop-filter: blur(3px);
+	backdrop-filter: blur(6px);
+	-webkit-backdrop-filter: blur(6px);
 }
+
+.tiddlypwa-modal-wrapper {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding-inline: 1.25rem;
+	padding-block: 1.5rem;
+	font-family: var(--suite-font-sans, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif);
+	color: var(--tpwa-fg);
+}
+
+.tiddlypwa-modal-wrapper .tc-modal.tiddlypwa-modal {
+	position: relative;
+	inset: auto;
+	inline-size: 100%;
+	max-inline-size: 26rem;
+	margin: 0;
+	background: var(--tpwa-card-bg);
+	color: var(--tpwa-fg);
+	border: 1px solid var(--tpwa-border);
+	border-radius: var(--suite-radius-lg, 16px);
+	box-shadow: 0 20px 48px -12px rgba(15, 23, 42, 0.24), 0 4px 16px -4px rgba(15, 23, 42, 0.1);
+	overflow: hidden;
+	animation: tpwa-modal-enter 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+	@media (prefers-reduced-motion: reduce) {
+		animation: none;
+	}
+}
+
+.tiddlypwa-modal-wrapper .tc-modal-header.tiddlypwa-modal-header {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	text-align: center;
+	padding-block: 1.75rem 1.15rem;
+	padding-inline: 1.75rem;
+	border-block-end: 1px solid var(--tpwa-border);
+	background: color-mix(in oklab, var(--tpwa-accent) 4%, var(--tpwa-card-bg));
+}
+
+.tiddlypwa-modal-emblem {
+	inline-size: 3.75rem;
+	block-size: 3.75rem;
+	margin-block-end: 0.85rem;
+	border-radius: 1rem;
+	background: color-mix(in oklab, var(--tpwa-accent) 14%, var(--tpwa-surface));
+	border: 1px solid color-mix(in oklab, var(--tpwa-accent) 28%, transparent);
+	box-shadow: 0 6px 16px -4px color-mix(in oklab, var(--tpwa-accent) 20%, transparent);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.tc-modal-header.tiddlypwa-modal-header .tiddlypwa-modal-emblem svg {
+	inline-size: 2.35rem;
+	block-size: 2.35rem;
+}
+
+.tiddlypwa-modal-greeting {
+	display: inline-flex;
+	align-items: center;
+	padding-block: 0.15rem;
+	padding-inline: 0.6rem;
+	margin-block-end: 0.4rem;
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--tpwa-accent) 12%, var(--tpwa-surface));
+	color: color-mix(in oklab, var(--tpwa-accent) 80%, var(--tpwa-fg));
+	font-size: 0.72rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.tc-modal-header.tiddlypwa-modal-header h3 {
+	margin: 0;
+	font-size: 1.25rem;
+	font-weight: 700;
+	line-height: 1.25;
+	letter-spacing: -0.015em;
+	color: var(--tpwa-fg);
+	text-wrap: balance;
+}
+
+.tiddlypwa-modal-wrapper .tc-modal-body.tiddlypwa-modal-body {
+	padding-block: 1.35rem 1.5rem;
+	padding-inline: 1.75rem;
+	max-block-size: 72vh;
+	overflow-y: auto;
+	font-size: 0.92rem;
+	line-height: 1.5;
+	color: var(--tpwa-fg);
+}
+
+.tiddlypwa-modal-copy p {
+	margin-block: 0 0.75rem;
+	color: var(--tpwa-fg);
+	text-wrap: pretty;
+}
+
+.tiddlypwa-modal-copy p:last-child {
+	margin-block-end: 0;
+}
+
+.tiddlypwa-modal-copy code {
+	padding-block: 0.12rem;
+	padding-inline: 0.35rem;
+	border-radius: 4px;
+	background: var(--tpwa-subtle-bg);
+	border: 1px solid var(--tpwa-border);
+	font-size: 0.85em;
+}
+
+.tiddlypwa-form {
+	margin-block-start: 0.85rem;
+}
+
+.tiddlypwa-form label {
+	display: block;
+	margin-block: 0.75rem 0.35rem;
+	font-size: 0.82rem;
+	font-weight: 600;
+	color: var(--tpwa-fg);
+}
+
 .tiddlypwa-form input,
 .tiddlypwa-form button,
 .tiddlypwa-form details {
 	display: block;
-	width: 100%;
-	margin: 0.5em 0;
+	inline-size: 100%;
+	box-sizing: border-box;
+	margin-block: 0.4rem 0;
 }
-.tiddlypwa-form input,
-.tiddlypwa-form button {
-	padding: 0.25em;
-	border-radius: 3px;
-	border: 1px solid #999;
-	color: inherit;
+
+.tiddlypwa-form input {
+	min-block-size: var(--suite-control-height-md, 2.5rem);
+	padding-block: 0.5rem;
+	padding-inline: 0.75rem;
+	border-radius: var(--suite-radius-sm, 8px);
+	border: 1px solid var(--tpwa-border-control);
+	background: var(--tpwa-surface);
+	color: var(--tpwa-fg);
+	font-family: inherit;
+	font-size: 0.92rem;
+	transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+
+.tiddlypwa-form input[readonly] {
+	background: var(--tpwa-subtle-bg);
+	opacity: 0.88;
+}
+
+.tiddlypwa-form input:focus-visible {
+	outline: 2px solid var(--tpwa-accent);
+	outline-offset: 2px;
+	border-color: var(--tpwa-accent);
+	box-shadow: 0 0 0 3px color-mix(in oklab, var(--tpwa-accent) 24%, transparent);
+}
+
+.tiddlypwa-form button[type="submit"],
+.tiddlypwa-btn-primary {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	inline-size: 100%;
+	min-block-size: 2.65rem;
+	margin-block-start: 1rem;
+	padding-block: 0.55rem;
+	padding-inline: 1rem;
+	border-radius: var(--suite-radius-sm, 8px);
+	border: 1px solid color-mix(in oklab, var(--tpwa-accent) 85%, #000000);
+	background: var(--tpwa-accent);
+	color: #ffffff;
+	font-family: inherit;
+	font-size: 0.92rem;
+	font-weight: 600;
+	cursor: pointer;
+	transition: filter 0.15s ease, transform 0.1s ease;
+}
+
+.tiddlypwa-form button[type="submit"]:hover:not(:disabled),
+.tiddlypwa-btn-primary:hover:not(:disabled) {
+	filter: brightness(1.06);
+}
+
+.tiddlypwa-form button[type="submit"]:disabled,
+.tiddlypwa-btn-primary:disabled,
+.tiddlypwa-form input:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+.tiddlypwa-form button[type="submit"]:focus-visible,
+.tiddlypwa-btn-primary:focus-visible,
+.tiddlypwa-btn-secondary:focus-visible {
+	outline: 2px solid var(--tpwa-accent);
+	outline-offset: 2px;
+}
+
+.tiddlypwa-btn-secondary {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	inline-size: 100%;
+	min-block-size: 2.4rem;
+	margin-block-start: 0.5rem;
+	padding-block: 0.45rem;
+	padding-inline: 0.85rem;
+	border-radius: var(--suite-radius-sm, 8px);
+	border: 1px solid var(--tpwa-border-control);
+	background: transparent;
+	color: var(--tpwa-fg);
+	font-family: inherit;
+	font-size: 0.85rem;
+	font-weight: 500;
+	cursor: pointer;
+}
+
+.tiddlypwa-btn-secondary:hover:not(:disabled) {
+	background: color-mix(in oklab, var(--tpwa-fg) 6%, transparent);
+}
+
+.tiddlypwa-form details {
+	margin-block-start: 0.85rem;
+	padding-block: 0.65rem;
+	padding-inline: 0.85rem;
+	border-radius: var(--suite-radius-sm, 8px);
+	background: var(--tpwa-subtle-bg);
+	border: 1px solid var(--tpwa-border);
+	font-size: 0.84rem;
+}
+
+.tiddlypwa-form details summary {
+	cursor: pointer;
+	font-weight: 500;
+	color: var(--tpwa-muted);
+}
+
 .tiddlypwa-form-error {
-	color: #ee1111;
-	font-weight: bolder;
+	margin-block: 0.75rem 0;
+	padding-block: 0.55rem;
+	padding-inline: 0.75rem;
+	border-radius: var(--suite-radius-sm, 8px);
+	background: var(--tpwa-danger-bg);
+	border: 1px solid var(--tpwa-danger-border);
+	color: var(--tpwa-danger-fg);
+	font-size: 0.85rem;
+	font-weight: 600;
 }
+
 .tiddlypwa-paired-notice {
-	background: #e8f4fd;
-	border: 1px solid #b6d4fe;
-	padding: 8px 12px;
-	border-radius: 4px;
-	margin-bottom: 12px;
-	color: #084298;
-	font-size: 0.9em;
+	background: var(--tpwa-info-bg);
+	border: 1px solid var(--tpwa-info-border);
+	padding-block: 0.65rem;
+	padding-inline: 0.85rem;
+	border-radius: var(--suite-radius-sm, 8px);
+	margin-block-end: 0.85rem;
+	color: var(--tpwa-info-fg);
+	font-size: 0.86rem;
+	line-height: 1.45;
 }
+
 .tiddlypwa-biometric-box {
 	text-align: center;
-	margin: 1em 0;
+	margin-block: 0.5rem 0.25rem;
+	padding-block: 0.85rem;
+	padding-inline: 0.75rem;
+	border-radius: var(--suite-radius-md, 10px);
+	background: var(--tpwa-subtle-bg);
+	border: 1px solid var(--tpwa-border);
 }
+
+.tiddlypwa-biometric-icon {
+	inline-size: 2.75rem;
+	block-size: 2.75rem;
+	margin-inline: auto;
+	margin-block-end: 0.5rem;
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--tpwa-accent) 14%, var(--tpwa-surface));
+	color: var(--tpwa-accent);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.tiddlypwa-biometric-icon svg {
+	inline-size: 1.4rem;
+	block-size: 1.4rem;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.tiddlypwa-modal-progress {
+	margin-block-start: 0.9rem;
+	padding-block: 0.75rem;
+	padding-inline: 0.9rem;
+	border-radius: var(--suite-radius-md, 10px);
+	background: var(--tpwa-subtle-bg);
+	border: 1px solid var(--tpwa-border);
+}
+
+.tiddlypwa-modal-progress-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	margin-block-end: 0.45rem;
+	font-size: 0.82rem;
+	font-weight: 500;
+}
+
+.tiddlypwa-modal-progress-pct {
+	font-size: 0.76rem;
+	font-weight: 600;
+	color: var(--tpwa-muted);
+	font-variant-numeric: tabular-nums;
+}
+
 .tiddlypwa-pair-container svg {
 	display: block;
 	margin: 0 auto;
 }
+
 .tiddlypwa-supporter {
 	font: 1.5em cursive;
 }
+
 .tiddlypwa-supporter-tier {
 	font-weight: bold;
 	color: pink;
@@ -58,25 +367,45 @@ Licensed under 0BSD, see license.tid.
 	display: inline-block;
 	transform: rotateZ(-3deg);
 }
+
 html body svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-idle {
 	visibility: visible;
 }
+
 html body svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-syncing {
 	visibility: hidden;
 	fill: <<colour dirty-indicator>>;
 }
+
 html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-idle {
 	visibility: hidden;
 }
+
 html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic .tiddlypwa-image-sync-button-dynamic-syncing {
 	visibility: visible;
 }
+
 html body.tiddlypwa-syncing svg.tiddlypwa-image-sync-button-dynamic {
 	animation: spin 1s infinite linear;
 	transform-box: fill-box;
+	@media (prefers-reduced-motion: reduce) {
+		animation-duration: 6s;
+	}
 }
+
 @keyframes spin {
 	to {
 		transform: rotate(360deg);
+	}
+}
+
+@keyframes tpwa-modal-enter {
+	from {
+		opacity: 0;
+		transform: translateY(8px) scale(0.985);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0) scale(1);
 	}
 }

@@ -1,0 +1,376 @@
+title: $:/plugins/mblackman/tiddlypwa/splash
+tags: $:/tags/RawMarkupWikified/TopBody
+
+\import [[$:/core/ui/PageMacros]] [all[shadows+tiddlers]tag[$:/tags/Macro]!has[draft.of]]
+<$wikify name="tpwaTitleText" text={{$:/SiteTitle}}><$wikify name="tpwaSubText" text={{$:/SiteSubtitle}}>`<div id="tiddlypwa-splash" class="tc-remove-when-wiki-loaded tiddlypwa-splash" role="status" aria-live="polite" aria-busy="true">
+<style>
+.tiddlypwa-splash {
+	--tpwa-bg: var(--suite-bg-canvas, var(--mn-bg-app, var(--tpc-page-background, `<<colour page-background>>`)));
+	--tpwa-surface: var(--suite-surface-primary, var(--mn-bg-surface, var(--tpc-tiddler-background, `<<colour tiddler-background>>`)));
+	--tpwa-fg: var(--suite-fg-primary, var(--mn-fg-primary, var(--tpc-foreground, `<<colour foreground>>`)));
+	--tpwa-muted-raw: var(--tpc-muted-foreground, `<<colour muted-foreground>>`);
+	--tpwa-muted: var(--suite-fg-muted, var(--mn-fg-muted, color-mix(in oklab, var(--tpwa-fg) 60%, var(--tpwa-muted-raw))));
+	--tpwa-accent: var(--suite-accent, var(--mn-accent, var(--tpc-primary, `<<colour primary>>`)));
+	--tpwa-card-bg: var(--suite-surface-card, color-mix(in oklab, var(--tpwa-surface) 95%, var(--tpwa-fg) 5%));
+	--tpwa-subtle-bg: var(--suite-surface-subtle, color-mix(in oklab, var(--tpwa-surface) 91%, var(--tpwa-fg) 9%));
+	--tpwa-border: var(--suite-border-subtle, color-mix(in oklab, var(--tpwa-fg) 13%, transparent));
+	--tpwa-border-strong: var(--suite-border-strong, color-mix(in oklab, var(--tpwa-fg) 22%, transparent));
+	color-scheme: light dark;
+	position: fixed;
+	inset: 0;
+	z-index: 3900;
+	display: flex;
+	 flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding-inline: 1.5rem;
+	padding-block: 2rem;
+	background-color: var(--tpwa-bg);
+	color: var(--tpwa-fg);
+	font-family: var(--suite-font-sans, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif);
+	-webkit-font-smoothing: antialiased;
+	overflow: hidden;
+	user-select: none;
+}
+.tiddlypwa-splash::before,
+.tiddlypwa-splash::after {
+	content: "";
+	position: absolute;
+	border-radius: 9999px;
+	pointer-events: none;
+	filter: blur(64px);
+	opacity: 0.55;
+}
+.tiddlypwa-splash::before {
+	inline-size: min(28rem, 80vw);
+	block-size: min(28rem, 80vw);
+	inset-block-start: -10%;
+	inset-inline-end: -5%;
+	background: radial-gradient(circle, color-mix(in oklab, var(--tpwa-accent) 24%, transparent) 0%, transparent 70%);
+}
+.tiddlypwa-splash::after {
+	inline-size: min(24rem, 75vw);
+	block-size: min(24rem, 75vw);
+	inset-block-end: -8%;
+	inset-inline-start: -5%;
+	background: radial-gradient(circle, color-mix(in oklab, var(--tpwa-accent) 16%, transparent) 0%, transparent 70%);
+}
+.tiddlypwa-splash-card {
+	position: relative;
+	z-index: 1;
+	inline-size: 100%;
+	max-inline-size: 24rem;
+	padding-block: 2.25rem 1.75rem;
+	padding-inline: 2rem;
+	background: var(--tpwa-card-bg);
+	border: 1px solid var(--tpwa-border);
+	border-radius: var(--suite-radius-lg, 16px);
+	box-shadow: 0 16px 40px -8px rgba(15, 23, 42, 0.18), 0 4px 12px -2px rgba(15, 23, 42, 0.08);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	text-align: center;
+	animation: tpwa-card-enter 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+	@media (prefers-reduced-motion: reduce) {
+		animation: none;
+	}
+}
+.tiddlypwa-splash-emblem {
+	position: relative;
+	inline-size: 4.75rem;
+	block-size: 4.75rem;
+	margin-block-end: 1.25rem;
+	border-radius: 1.25rem;
+	background: color-mix(in oklab, var(--tpwa-accent) 14%, var(--tpwa-surface));
+	border: 1px solid color-mix(in oklab, var(--tpwa-accent) 28%, transparent);
+	box-shadow: 0 8px 20px -4px color-mix(in oklab, var(--tpwa-accent) 22%, transparent);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	animation: tpwa-emblem-float 3.2s ease-in-out infinite;
+	@media (prefers-reduced-motion: reduce) {
+		animation: none;
+	}
+}
+.tiddlypwa-splash-emblem > svg {
+	inline-size: 3rem;
+	block-size: 3rem;
+	filter: drop-shadow(0 2px 4px rgba(15, 23, 42, 0.14));
+}
+.tiddlypwa-splash-badge {
+	position: absolute;
+	inset-block-end: -0.3rem;
+	inset-inline-end: -0.3rem;
+	inline-size: 1.6rem;
+	block-size: 1.6rem;
+	border-radius: 9999px;
+	background: var(--tpwa-accent);
+	color: #ffffff;
+	border: 2px solid var(--tpwa-card-bg);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	box-shadow: 0 2px 6px rgba(15, 23, 42, 0.2);
+}
+.tiddlypwa-splash-badge svg {
+	inline-size: 0.85rem;
+	block-size: 0.85rem;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2.25;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+.tiddlypwa-splash-greeting {
+	display: inline-flex;
+	align-items: center;
+	padding-block: 0.2rem;
+	padding-inline: 0.65rem;
+	margin-block-end: 0.5rem;
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--tpwa-accent) 12%, var(--tpwa-surface));
+	color: color-mix(in oklab, var(--tpwa-accent) 78%, var(--tpwa-fg));
+	font-size: 0.75rem;
+	font-weight: 600;
+	letter-spacing: 0.03em;
+	text-transform: uppercase;
+}
+.tiddlypwa-splash-title {
+	margin: 0;
+	font-size: 1.4rem;
+	font-weight: 700;
+	line-height: 1.25;
+	letter-spacing: -0.015em;
+	color: var(--tpwa-fg);
+	text-wrap: balance;
+}
+.tiddlypwa-splash-subtitle {
+	margin-block: 0.35rem 1.5rem;
+	margin-inline: 0;
+	font-size: 0.875rem;
+	line-height: 1.45;
+	color: var(--tpwa-muted);
+	text-wrap: pretty;
+}
+.tiddlypwa-splash-progress-wrap {
+	inline-size: 100%;
+	padding-block: 0.85rem;
+	padding-inline: 1rem;
+	background: var(--tpwa-subtle-bg);
+	border: 1px solid var(--tpwa-border);
+	border-radius: var(--suite-radius-md, 10px);
+}
+.tiddlypwa-splash-status-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	margin-block-end: 0.55rem;
+	font-size: 0.8125rem;
+}
+.tiddlypwa-splash-status-lead {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	color: var(--tpwa-fg);
+	font-weight: 500;
+	min-inline-size: 0;
+}
+.tiddlypwa-splash-pulse {
+	inline-size: 0.5rem;
+	block-size: 0.5rem;
+	border-radius: 9999px;
+	background: var(--tpwa-accent);
+	flex-shrink: 0;
+	animation: tpwa-pulse 1.5s ease-in-out infinite;
+	@media (prefers-reduced-motion: reduce) {
+		animation: none;
+		opacity: 0.8;
+	}
+}
+.tiddlypwa-splash-status-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.tiddlypwa-splash-pct {
+	font-size: 0.75rem;
+	font-weight: 600;
+	color: var(--tpwa-muted);
+	font-variant-numeric: tabular-nums;
+	flex-shrink: 0;
+}
+.tiddlypwa-splash-track {
+	position: relative;
+	inline-size: 100%;
+	block-size: 0.375rem;
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--tpwa-fg) 12%, transparent);
+	overflow: hidden;
+}
+.tiddlypwa-splash-bar {
+	block-size: 100%;
+	border-radius: 9999px;
+	background: var(--tpwa-accent);
+	transition: inline-size 0.18s ease-out, width 0.18s ease-out;
+}
+.tiddlypwa-splash-bar.is-indeterminate {
+	inline-size: 42%;
+	animation: tpwa-indeterminate 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+	@media (prefers-reduced-motion: reduce) {
+		inline-size: 100%;
+		opacity: 0.6;
+		animation: none;
+	}
+}
+.tiddlypwa-splash-actions {
+	inline-size: 100%;
+}
+.tiddlypwa-splash-actions:not(:empty) {
+	margin-block-start: 0.875rem;
+}
+.tiddlypwa-splash-actions button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	inline-size: 100%;
+	min-block-size: 2.5rem;
+	padding-block: 0.45rem;
+	padding-inline: 1rem;
+	border-radius: var(--suite-radius-sm, 8px);
+	border: 1px solid color-mix(in oklab, var(--tpwa-fg) 46%, var(--tpwa-surface));
+	background: var(--tpwa-surface);
+	color: var(--tpwa-fg);
+	font-family: inherit;
+	font-size: 0.84rem;
+	font-weight: 500;
+	cursor: pointer;
+}
+.tiddlypwa-splash-actions button:hover:not(:disabled) {
+	background: color-mix(in oklab, var(--tpwa-fg) 7%, var(--tpwa-surface));
+}
+.tiddlypwa-splash-actions button:focus-visible {
+	outline: 2px solid var(--tpwa-accent);
+	outline-offset: 2px;
+}
+.tiddlypwa-splash-footer {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	margin-block-start: 1.25rem;
+	font-size: 0.75rem;
+	color: var(--tpwa-muted);
+}
+.tiddlypwa-splash-footer svg {
+	inline-size: 0.85rem;
+	block-size: 0.85rem;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	opacity: 0.85;
+}
+@keyframes tpwa-card-enter {
+	from {
+		opacity: 0;
+		transform: translateY(8px) scale(0.985);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+	}
+}
+@keyframes tpwa-emblem-float {
+	0%, 100% {
+		transform: translateY(0);
+	}
+	50% {
+		transform: translateY(-4px);
+	}
+}
+@keyframes tpwa-pulse {
+	0%, 100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 0.4;
+		transform: scale(0.85);
+	}
+}
+@keyframes tpwa-indeterminate {
+	0% {
+		transform: translateX(-110%);
+	}
+	100% {
+		transform: translateX(250%);
+	}
+}
+</style>
+<div class="tiddlypwa-splash-card">
+	<div class="tiddlypwa-splash-emblem" aria-hidden="true">
+		<svg version="1.1" xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+			<path fill="#C49270" d="M427.932,4.041H134.917c-1.925-0.15-3.865-0.25-5.829-0.25c-40.814,0-73.901,33.086-73.901,73.9c0,1.986,0.08,3.952,0.234,5.898h-0.234v387.997c0,19.558,15.855,35.414,35.414,35.414h40.633v-81.18c3.453,1.059,7.118,1.631,10.918,1.631h297.662c20.544,0,37.199-16.654,37.199-37.199V53.121C477.013,26.015,455.039,4.041,427.932,4.041z"/>
+			<path fill="#DCE2E2" d="M455.931,67.945c0-21.992-20.75-39.972-46.96-41.336v-0.093H129.088c-20.407,0-36.95,12.668-36.95,28.294s16.543,28.294,36.95,28.294v0.485H331.89v390.972l73.882,8.673c28.693,0,50.159-56.776,50.159-84.813V69.915h-0.06C455.908,69.262,455.931,68.606,455.931,67.945z"/>
+			<path fill="#EDC0A2" d="M390.578,83.59H131.234V507h259.344c20.252,0,36.669-16.417,36.669-36.669V120.259C427.247,100.007,410.83,83.59,390.578,83.59z"/>
+			<path fill="#F9F9F7" d="M333.49,240.399H200.546c-7.953,0-14.4-6.447-14.4-14.4v-50.115c0-7.953,6.447-14.4,14.4-14.4H333.49c7.953,0,14.4,6.447,14.4,14.4v50.115C347.89,233.952,341.443,240.399,333.49,240.399z"/>
+		</svg>
+		<span class="tiddlypwa-splash-badge">
+			<svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+		</span>
+	</div>
+	<div id="tiddlypwa-splash-greeting" class="tiddlypwa-splash-greeting">Welcome back</div>
+	<h1 id="tiddlypwa-splash-title" class="tiddlypwa-splash-title">`<$text text={{{ [<tpwaTitleText>!match[My TiddlyWiki]else[TiddlyPWA]encodehtml[]] }}}/>`</h1>
+	<p id="tiddlypwa-splash-subtitle" class="tiddlypwa-splash-subtitle">`<$text text={{{ [<tpwaSubText>!match[a reusable non-linear personal web notebook]else[Encrypted offline-first personal wiki]encodehtml[]] }}}/>`</p>
+	<div class="tiddlypwa-splash-progress-wrap">
+		<div class="tiddlypwa-splash-status-row">
+			<span class="tiddlypwa-splash-status-lead">
+				<span class="tiddlypwa-splash-pulse" aria-hidden="true"></span>
+				<span id="tiddlypwa-splash-status" class="tiddlypwa-splash-status-text">Opening your wiki…</span>
+			</span>
+			<span id="tiddlypwa-splash-pct" class="tiddlypwa-splash-pct"></span>
+		</div>
+		<div class="tiddlypwa-splash-track" role="progressbar" id="tiddlypwa-splash-progressbar" aria-valuemin="0" aria-valuemax="100">
+			<div id="tiddlypwa-splash-bar" class="tiddlypwa-splash-bar is-indeterminate"></div>
+		</div>
+	</div>
+	<div id="tiddlypwa-splash-actions" class="tiddlypwa-splash-actions"></div>
+	<div class="tiddlypwa-splash-footer" aria-hidden="true">
+		<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+		<span>End-to-end encrypted</span>
+		<span>·</span>
+		<span>Offline-ready</span>
+	</div>
+</div>
+<script>
+(function(){
+	try {
+		var h = new Date().getHours();
+		var greet = h < 5 ? "Working late" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+		var gEl = document.getElementById("tiddlypwa-splash-greeting");
+		if (gEl) gEl.textContent = greet;
+		var raw = localStorage.getItem("tiddlypwa-splash:" + location.pathname);
+		if (!raw) return;
+		var data = JSON.parse(raw);
+		var root = document.getElementById("tiddlypwa-splash");
+		if (root && data) {
+			if (data.bg) root.style.setProperty("--tpwa-bg", data.bg);
+			if (data.surface) root.style.setProperty("--tpwa-surface", data.surface);
+			if (data.fg) root.style.setProperty("--tpwa-fg", data.fg);
+			if (data.muted) root.style.setProperty("--tpwa-muted-raw", data.muted);
+			if (data.accent) root.style.setProperty("--tpwa-accent", data.accent);
+			if (data.colorScheme) root.style.setProperty("color-scheme", data.colorScheme);
+		}
+		if (data && data.title) {
+			var tEl = document.getElementById("tiddlypwa-splash-title");
+			if (tEl) tEl.textContent = data.title;
+		}
+		if (data && data.subtitle) {
+			var sEl = document.getElementById("tiddlypwa-splash-subtitle");
+			if (sEl) sEl.textContent = data.subtitle;
+		}
+	} catch (_e) {}
+})();
+</script>
+</div>`</$wikify></$wikify>

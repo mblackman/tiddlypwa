@@ -260,6 +260,9 @@ Formatted with `deno fmt`.
 				if (changes['$:/temp/TiddlyPWAPairIncludeKey']) {
 					this.updatePairUrl();
 				}
+				if (changes['$:/SiteTitle'] || changes['$:/SiteSubtitle'] || changes['$:/palette']) {
+					this.reflectSplashCache();
+				}
 				if (this.isReady()) {
 					const hasRelevantChange = Object.keys(changes).some((title) =>
 						title !== '$:/StoryList' &&
@@ -1889,6 +1892,39 @@ Formatted with `deno fmt`.
 			});
 		}
 
+		reflectSplashCache() {
+			try {
+				const rawTitle = this.wiki.getTiddlerText('$:/SiteTitle', '').trim();
+				const rawSub = this.wiki.getTiddlerText('$:/SiteSubtitle', '').trim();
+				const title = rawTitle ? this.wiki.renderText('text/plain', 'text/vnd.tiddlywiki', rawTitle).trim() : '';
+				const subtitle = rawSub ? this.wiki.renderText('text/plain', 'text/vnd.tiddlywiki', rawSub).trim() : '';
+				const paletteName = this.wiki.getTiddlerText('$:/palette', '').trim();
+				const paletteTid = paletteName ? this.wiki.getTiddler(paletteName) : null;
+				const paletteData = paletteName ? this.wiki.getTiddlerData(paletteName, {}) : {};
+				const cleanColor = (val) => {
+					if (!val || typeof val !== 'string') return '';
+					const v = val.trim();
+					if (v.includes('<<') || v.includes('{{')) return '';
+					return v;
+				};
+				const cache = {
+					title: (title && title !== 'My TiddlyWiki') ? title : 'TiddlyPWA',
+					subtitle: (subtitle && subtitle !== 'a reusable non-linear personal web notebook')
+						? subtitle
+						: 'Encrypted offline-first personal wiki',
+					bg: cleanColor(paletteData['page-background']),
+					surface: cleanColor(paletteData['tiddler-background']),
+					fg: cleanColor(paletteData['foreground']),
+					muted: cleanColor(paletteData['muted-foreground']),
+					accent: cleanColor(paletteData['primary']),
+					colorScheme: cleanColor(paletteTid?.fields?.['color-scheme']),
+				};
+				localStorage.setItem(`tiddlypwa-splash:${location.pathname}`, JSON.stringify(cache));
+			} catch (_e) {
+				// Ignore localStorage quota or private browsing errors
+			}
+		}
+
 		isReady() {
 			return this.ready;
 		}
@@ -1991,6 +2027,14 @@ Formatted with `deno fmt`.
 				return tid;
 			};
 			const records = toDecrypt.filter((r) => !r.deleted);
+			if (records.length > 0) {
+				this.modal?.setProgress?.(
+					0,
+					`Decrypting ${records.length.toLocaleString()} ${records.length === 1 ? 'tiddler' : 'tiddlers'}…`,
+				);
+			} else {
+				this.modal?.setProgress?.(100, 'Preparing workspace…');
+			}
 			const toAdd = [];
 			// Decrypt the first record alone so a wrong key fails fast, then decrypt the rest concurrently
 			// in batches: WebCrypto and DecompressionStream work happens off the main thread, so keeping
@@ -2006,11 +2050,12 @@ Formatted with `deno fmt`.
 					return false;
 				}
 				i += batch.length;
-				this.modal?.setFeedback(`<p>Decrypting tiddlers… (${Math.round(100 * i / records.length)}%)</p>`);
+				const pct = Math.round(100 * i / records.length);
+				this.modal?.setProgress?.(pct, 'Decrypting tiddlers…');
 			}
 			console.timeEnd('initial decrypt');
 			console.time('initial add');
-			this.modal?.setFeedback(`<p>Loading tiddlers…</p>`);
+			this.modal?.setProgress?.(100, 'Loading tiddlers…');
 			// Waiting for one change event prevents unlocking before the adding is actually done
 			const themHandlers = toAdd.length > 0 ? this.firstChange() : Promise.resolve();
 			// Adds are batched all together SYNCHRONOUSLY to prevent event handlers from running on every add!
@@ -2368,7 +2413,7 @@ Formatted with `deno fmt`.
 				this.releaseBoot();
 				await new Promise((resolve) => {
 					const doBiometric = async () => {
-						this.modal.setFeedback('<p>Authenticating with biometrics…</p>');
+						this.modal.setProgress(null, 'Authenticating with biometrics…');
 						try {
 							await this.unlockWithBiometrics(this.biometricSession);
 							bioUnlocked = true;
@@ -2403,12 +2448,12 @@ Formatted with `deno fmt`.
 				const [weAreScrewed, missingWarning] = this.missingFeaturesWarning();
 				const seemsLikeDocs = $tw.wiki.getTiddlersWithTag('TiddlyPWA Docs').length > 0;
 				if (freshDb) {
-					this.modal.setFeedback(
-						'<p>No wiki data found in the browser storage for this URL. Wait a second, looking around the server..</p>',
-					);
+					this.modal.setProgress(null, 'Checking sync server…');
 					const giveUp = new AbortController();
 					this.modal.showGiveUpButtonDelayed(6900, () => giveUp.abort());
-					this.modal.showModalDelayed(seemsLikeDocs ? 6900 : 1000);
+					if (seemsLikeDocs) {
+						this.modal.showModalDelayed(6900);
+					}
 					try {
 						const resp = await fetch('bootstrap.json', {
 							signal: giveUp.signal,
@@ -2553,7 +2598,7 @@ Formatted with `deno fmt`.
 				let checked = false;
 				while (!checked) {
 					const password = await this.modal.formSubmitted();
-					this.modal.setFeedback('<p>Please wait…</p>');
+					this.modal.setProgress(null, 'Deriving encryption keys…');
 					if (!this.salt) this.salt = crypto.getRandomValues(new Uint8Array(32));
 					console.time('hash');
 					const basebits = await argon.hash(utfenc.encode(password), this.salt, { m: 1 << 17, t: 2 });
@@ -2581,8 +2626,7 @@ Formatted with `deno fmt`.
 					this.backgroundSync();
 				}
 			} else {
-				this.modal.setBody('<p>Welcome back!</p>');
-				this.modal.showFormDelayed(500, true);
+				this.modal.setProgress(0, 'Unlocking your wiki…');
 				await this.initialRead();
 			}
 			this.afterUnlock(freshDb);
@@ -2591,6 +2635,7 @@ Formatted with `deno fmt`.
 		// Closes the unlock modal right away; the status reflections below only feed the settings UI,
 		// so they run in the background instead of keeping the wiki hidden.
 		afterUnlock(freshDb) {
+			this.reflectSplashCache();
 			if (this.modal) {
 				this.modal.close();
 				delete this.modal;
