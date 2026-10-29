@@ -137,6 +137,115 @@ export class TiddlyPWASyncApp {
 				// Default app files not available — new wikis will 404 until app is uploaded
 			}
 		}
+		await this.upgradeStoredWikiCorePlugins();
+	}
+
+	async upgradeStoredWikiCorePlugins() {
+		const defaultApp = this.defaultAppFiles.get('app.html');
+		const defaultSw = this.defaultAppFiles.get('sw.js');
+		if (!defaultApp) return;
+
+		const storeTag = '<script class="tiddlywiki-tiddler-store" type="application/json">';
+		let defaultPlugins: Map<string, Record<string, unknown>>;
+		try {
+			const defaultHtml = new TextDecoder().decode(brotli.decompress(defaultApp.body));
+			const sIdx = defaultHtml.indexOf(storeTag);
+			const eIdx = sIdx !== -1 ? defaultHtml.indexOf('</script>', sIdx) : -1;
+			if (sIdx === -1 || eIdx === -1) return;
+			const store = JSON.parse(defaultHtml.slice(sIdx + storeTag.length, eIdx)) as Record<string, unknown>[];
+			defaultPlugins = new Map();
+			for (const title of ['$:/plugins/mblackman/tiddlypwa', '$:/plugins/mblackman/web-app-manifest']) {
+				const found = store.find((t) => t.title === title);
+				if (found) defaultPlugins.set(title, found);
+			}
+			if (defaultPlugins.size === 0) return;
+		} catch (e) {
+			console.warn('Could not parse default app store for plugin upgrade:', e);
+			return;
+		}
+
+		const wikis = this.db.listWikis();
+		if (wikis.length === 0) return;
+
+		const legacyTitles = new Set(['$:/plugins/valpackett/tiddlypwa', '$:/plugins/valpackett/web-app-manifest']);
+
+		for (const wiki of wikis) {
+			try {
+				const appFile = this.db.getWikiFile(wiki.token, 'app.html');
+				if (!appFile) continue;
+				const html = new TextDecoder().decode(brotli.decompress(appFile.body));
+				const sIdx = html.indexOf(storeTag);
+				const eIdx = sIdx !== -1 ? html.indexOf('</script>', sIdx) : -1;
+				if (sIdx === -1 || eIdx === -1) continue;
+
+				const store = JSON.parse(html.slice(sIdx + storeTag.length, eIdx)) as Record<string, unknown>[];
+				let changed = false;
+				const nextStore: Record<string, unknown>[] = [];
+				const seenBuiltin = new Set<string>();
+
+				for (const tid of store) {
+					const title = typeof tid.title === 'string' ? tid.title : '';
+					if (legacyTitles.has(title)) {
+						changed = true;
+						continue;
+					}
+					const targetPlugin = defaultPlugins.get(title);
+					if (targetPlugin) {
+						seenBuiltin.add(title);
+						if (tid.text !== targetPlugin.text || tid.version !== targetPlugin.version) {
+							nextStore.push(targetPlugin);
+							changed = true;
+						} else {
+							nextStore.push(tid);
+						}
+					} else {
+						nextStore.push(tid);
+					}
+				}
+
+				for (const [title, targetPlugin] of defaultPlugins) {
+					if (!seenBuiltin.has(title)) {
+						nextStore.push(targetPlugin);
+						changed = true;
+					}
+				}
+
+				if (changed) {
+					const serializedStore = '[\n' +
+						nextStore.map((t) => JSON.stringify(t).replace(/</g, '\\u003c')).join(',\n') +
+						'\n]';
+					const newHtml = html.slice(0, sIdx + storeTag.length) + serializedStore + html.slice(eIdx);
+					const utf = utfenc.encode(newHtml);
+					const etag = new Uint8Array(await crypto.subtle.digest('SHA-1', utf));
+					const compressed = brotli.compress(utf, 4096, 8);
+					this.db.transaction(() => {
+						if (!this.db.fileExists(etag)) {
+							this.db.storeFile({
+								etag,
+								rawsize: utf.length,
+								ctype: appFile.ctype,
+								body: compressed,
+							});
+						}
+						this.db.associateFile(wiki.token, etag, 'app.html');
+						if (defaultSw) {
+							const swEtag = decodeBase64Url(defaultSw.etag);
+							if (!this.db.fileExists(swEtag)) {
+								this.db.storeFile({
+									etag: swEtag,
+									rawsize: defaultSw.rawsize,
+									ctype: defaultSw.ctype,
+									body: defaultSw.body,
+								});
+							}
+							this.db.associateFile(wiki.token, swEtag, 'sw.js');
+						}
+					});
+				}
+			} catch (e) {
+				console.warn(`Failed to upgrade core plugins for wiki ${wiki.token.slice(0, 8)}:`, e);
+			}
+		}
 	}
 
 	adminPasswordCorrect(atoken: string) {

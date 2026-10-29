@@ -1841,12 +1841,26 @@ Formatted with `deno fmt`.
 			}
 			let cnt = 0;
 			await new Promise((resolve) =>
-				this.db.transaction('syncservers').objectStore('syncservers').openCursor().onsuccess = (evt) => {
+				this.db.transaction('syncservers', 'readwrite').objectStore('syncservers').openCursor().onsuccess = (evt) => {
 					const cursor = evt.target.result;
 					if (!cursor) {
 						return resolve();
 					}
-					const { url, token, lastSync } = cursor.value;
+					let { url, token, lastSync } = cursor.value;
+					if (typeof url === 'string' && typeof token === 'string' && token.length >= 2) {
+						const halftoken = token.slice(0, Math.floor(token.length / 2));
+						try {
+							const parsedUrl = new URL(url, document.location);
+							const dupSuffix = `/${halftoken}/tid.dly`;
+							if (halftoken && parsedUrl.pathname.endsWith(dupSuffix)) {
+								parsedUrl.pathname = parsedUrl.pathname.slice(0, -dupSuffix.length) + '/tid.dly';
+								url = parsedUrl.href;
+								cursor.update({ ...cursor.value, url });
+							}
+						} catch (_e) {
+							// Leave invalid URLs as-is
+						}
+					}
 					this.wiki.addTiddler({
 						title: '$:/temp/TiddlyPWAServers/' + cursor.key,
 						tags: ['$:/temp/TiddlyPWAServer'],
@@ -2819,14 +2833,21 @@ Formatted with `deno fmt`.
 				return cb(null);
 			}
 			this._deleteTiddler(title).then((_) => {
-				cb(null);
-				this.changesChannel.postMessage({ title, del: true });
-				this.backgroundSync();
 				if (this.tiddlersInFile.has(title)) {
+					if (!this.origSyncerIsDirty && $tw.syncer) {
+						const origIsDirty = $tw.syncer.isDirty.bind($tw.syncer);
+						this.origSyncerIsDirty = origIsDirty;
+						$tw.syncer.isDirty = () => this.appWikiDirty || origIsDirty();
+					}
+					this.appWikiDirty = true;
+					$tw.syncer?.updateDirtyStatus?.();
 					this.logger.alert(
 						`You have deleted the tiddler <code>${title}</code> which was in the app wiki file. If you want it gone, you must also save the app wiki; conversely, you can refresh the page to restore it.`,
 					);
 				}
+				cb(null);
+				this.changesChannel.postMessage({ title, del: true });
+				this.backgroundSync();
 			}).catch((e) => {
 				console.error(e);
 				cb(e);
@@ -2842,10 +2863,11 @@ Formatted with `deno fmt`.
 			}
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAUploadResult', text: 'Upload in progress.' });
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAUploading', text: 'yes' });
-			// Unpack any newly imported or updated plugins so their shadow tiddlers (such as sw.js and app-filter)
+			// Unpack any newly imported, updated, or deleted plugins so their shadow tiddlers (such as sw.js and app-filter)
 			// are up to date before rendering the app wiki and service worker.
 			try {
-				this.wiki.readPluginInfo();
+				const prevPlugins = this.wiki.unregisterPluginTiddlers(null);
+				this.wiki.readPluginInfo(Array.from(new Set([...prevPlugins, ...this.wiki.allTitles()])));
 				this.wiki.registerPluginTiddlers();
 				this.wiki.unpackPluginTiddlers();
 			} catch (e) {
@@ -2905,7 +2927,14 @@ Formatted with `deno fmt`.
 						}
 						continue;
 					}
-					const href = new URL((await resp.json()).urlprefix + 'app.html', new URL(url, document.location)).href;
+					const respData = await resp.json();
+					const rawPrefix = typeof respData.urlprefix === 'string' ? respData.urlprefix : '';
+					const cleanPrefix = rawPrefix.replace(/^\/+|\/+$/g, '');
+					const endpointUrl = new URL(url, document.location);
+					if (cleanPrefix && endpointUrl.pathname.endsWith(`/${cleanPrefix}/tid.dly`)) {
+						endpointUrl.pathname = endpointUrl.pathname.slice(0, -(`/${cleanPrefix}/tid.dly`.length)) + '/tid.dly';
+					}
+					const href = new URL((cleanPrefix ? cleanPrefix + '/' : '') + 'app.html', endpointUrl).href;
 					const isCurrent = isCurrentUrl(href);
 					urls.push(
 						href + (isCurrent ? ' {{$:/plugins/mblackman/tiddlypwa/cur-page-reload}}' : ''),
@@ -2919,7 +2948,9 @@ Formatted with `deno fmt`.
 						// The ETag is generated using Base64URL to match the reference server (assuming Brotli is working).
 						// If the ETag is different, sync will notice the mismatch and request the worker to reload.
 						try {
-							const etag = `"${await b64urlEnc(await crypto.subtle.digest('SHA-1', utfenc.encode(apphtml)))}-b"`;
+							const etag = typeof respData.etag === 'string' && respData.etag
+								? respData.etag
+								: `"${await b64urlEnc(await crypto.subtle.digest('SHA-1', utfenc.encode(apphtml)))}-b"`;
 							const makeResp = () =>
 								new Response(apphtml, {
 									headers: {
@@ -2928,14 +2959,18 @@ Formatted with `deno fmt`.
 									},
 								});
 							const cache = await caches.open('tiddlypwa');
-							let matchedAny = false;
+							const curPageUrl = new URL(location.pathname, location.origin).href;
+							let matchedCurrentPage = false;
 							for (const req of await cache.keys()) {
 								if (isCurrentUrl(req.url)) {
 									await cache.put(req, makeResp());
-									matchedAny = true;
+									if (req.url === curPageUrl) matchedCurrentPage = true;
 								}
 							}
-							if (!matchedAny) {
+							if (!matchedCurrentPage) {
+								await cache.put(curPageUrl, makeResp());
+							}
+							if (href !== curPageUrl && !isCurrentUrl(href)) {
 								await cache.put(href, makeResp());
 							}
 						} catch (e) {

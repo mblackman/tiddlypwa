@@ -316,3 +316,142 @@ Deno.test('Plugin Upgrade Flow: unpacking before uploadAppWiki updates shadow ti
 	const syncJson = await syncResp.json();
 	assertEquals(clientEtag, syncJson.appEtag);
 });
+
+Deno.test('Plugin Deletion Flow: unregisterPluginTiddlers removes deleted plugin shadows before first render', async () => {
+	const { createRequire } = await import('node:module');
+	const require = createRequire(import.meta.url);
+	const $tw = setupTiddlyWiki(require);
+
+	// 1. Install a plugin with a shadow tiddler and RawMarkup injection
+	const customPluginTitle = '$:/plugins/test/deleteme';
+	$tw.wiki.addTiddler(
+		new $tw.Tiddler({
+			title: customPluginTitle,
+			type: 'application/json',
+			'plugin-type': 'plugin',
+			version: '1.0.0',
+			text: JSON.stringify({
+				tiddlers: {
+					'$:/plugins/test/deleteme/readme': {
+						title: '$:/plugins/test/deleteme/readme',
+						text: 'DeleteMe Readme',
+					},
+					'$:/plugins/test/deleteme/rawmarkup': {
+						title: '$:/plugins/test/deleteme/rawmarkup',
+						tags: '$:/tags/RawMarkup',
+						text: '<!-- DELETEME_RAW_MARKUP_MARKER -->',
+					},
+				},
+			}),
+		}),
+	);
+
+	// Unpack on install
+	const prevInstall = $tw.wiki.unregisterPluginTiddlers(null);
+	$tw.wiki.readPluginInfo(Array.from(new Set([...prevInstall, ...$tw.wiki.allTitles()])));
+	$tw.wiki.registerPluginTiddlers();
+	$tw.wiki.unpackPluginTiddlers();
+
+	const publishFilter = $tw.wiki.getTiddlerText('$:/plugins/mblackman/tiddlypwa/app-filter');
+	const htmlAfterInstall = $tw.wiki.renderTiddler('text/plain', '$:/core/save/all', { variables: { publishFilter } });
+	assertEquals(htmlAfterInstall.includes('DELETEME_RAW_MARKUP_MARKER'), true);
+	assertEquals($tw.wiki.isShadowTiddler('$:/plugins/test/deleteme/readme'), true);
+
+	// 2. Delete the plugin tiddler and run the exact unpack sequence used by uploadAppWiki
+	$tw.wiki.deleteTiddler(customPluginTitle);
+
+	const prevDelete = $tw.wiki.unregisterPluginTiddlers(null);
+	$tw.wiki.readPluginInfo(Array.from(new Set([...prevDelete, ...$tw.wiki.allTitles()])));
+	$tw.wiki.registerPluginTiddlers();
+	$tw.wiki.unpackPluginTiddlers();
+
+	assertEquals($tw.wiki.isShadowTiddler('$:/plugins/test/deleteme/readme'), false);
+	const htmlAfterDelete = $tw.wiki.renderTiddler('text/plain', '$:/core/save/all', { variables: { publishFilter } });
+	assertEquals(htmlAfterDelete.includes('DELETEME_RAW_MARKUP_MARKER'), false);
+	assertEquals(htmlAfterDelete.includes(customPluginTitle), false);
+});
+
+Deno.test('Server upgradeStoredWikiCorePlugins: upgrades outdated tiddlypwa in custom wikis while preserving user plugins', async () => {
+	const { SQLiteDatastore } = await import('./sqlite.ts');
+	const { TiddlyPWASyncApp } = await import('./app.ts');
+	const brotli = await import('brotli');
+
+	const db = new SQLiteDatastore();
+	const app = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	await app.loadDefaultApp();
+
+	const createResp = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'create', atoken: 'test' }),
+		}),
+	);
+	const { token } = await createResp.json();
+	const halftoken = token.slice(0, token.length / 2);
+
+	// Build a custom app.html simulating an older wiki with tiddlypwa 0.2.2 + a custom user plugin
+	const defaultApp = app.defaultAppFiles.get('app.html')!;
+	const defaultHtml = new TextDecoder().decode(brotli.decompress(defaultApp.body));
+	const storeTag = '<script class="tiddlywiki-tiddler-store" type="application/json">';
+	const sIdx = defaultHtml.indexOf(storeTag);
+	const eIdx = defaultHtml.indexOf('</script>', sIdx);
+	const store = JSON.parse(defaultHtml.slice(sIdx + storeTag.length, eIdx)) as Record<string, unknown>[];
+
+	const oldStore = store.map((t) => {
+		if (t.title === '$:/plugins/mblackman/tiddlypwa') {
+			return { ...t, version: '0.2.2', text: '{"tiddlers":{}}' };
+		}
+		return t;
+	});
+	oldStore.push({
+		title: '$:/plugins/user/custom-plugin',
+		type: 'application/json',
+		'plugin-type': 'plugin',
+		version: '1.2.3',
+		text:
+			'{"tiddlers":{"$:/plugins/user/custom-plugin/readme":{"title":"$:/plugins/user/custom-plugin/readme","text":"Custom"}}}',
+	});
+
+	const oldHtml = defaultHtml.slice(0, sIdx + storeTag.length) +
+		'[\n' + oldStore.map((t) => JSON.stringify(t).replace(/</g, '\\u003c')).join(',\n') + '\n]' +
+		defaultHtml.slice(eIdx);
+
+	await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'uploadapp',
+				token,
+				authcode: 'test',
+				browserToken: 'tab1',
+				files: {
+					'app.html': { body: oldHtml, ctype: 'text/html;charset=utf-8' },
+					'sw.js': { body: '// old sw', ctype: 'application/javascript' },
+				},
+			}),
+		}),
+	);
+
+	// Re-run loadDefaultApp (simulating server restart/upgrade)
+	await app.loadDefaultApp();
+
+	const upgradedResp = await app.handle(new Request(`http://example.com/${halftoken}/app.html`));
+	const upgradedHtml = await upgradedResp.text();
+	const uStart = upgradedHtml.indexOf(storeTag);
+	const uEnd = upgradedHtml.indexOf('</script>', uStart);
+	const upgradedStore = JSON.parse(upgradedHtml.slice(uStart + storeTag.length, uEnd)) as Record<string, unknown>[];
+
+	const tpwaPlugin = upgradedStore.find((t) => t.title === '$:/plugins/mblackman/tiddlypwa')!;
+	const customPlugin = upgradedStore.find((t) => t.title === '$:/plugins/user/custom-plugin')!;
+	const defaultTpwa = store.find((t) => t.title === '$:/plugins/mblackman/tiddlypwa')!;
+
+	assertEquals(tpwaPlugin.version, defaultTpwa.version);
+	assertEquals(tpwaPlugin.text, defaultTpwa.text);
+	assertEquals(customPlugin?.version, '1.2.3');
+});
