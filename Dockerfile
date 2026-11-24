@@ -18,18 +18,22 @@ FROM denoland/deno:2.9.7
 
 WORKDIR /app
 
-# Prepare SQLite data directory
-RUN mkdir -p /data
+ENV DENO_DIR=/deno-dir
 
-# Cache dependencies
+# Cache dependencies before dropping root privileges
 COPY deno.json deno.lock ./
 COPY server/ ./server/
 COPY --from=builder /build/server/default_app/ ./server/default_app/
 RUN deno cache server/run.ts server/hash-admin-password.ts
 
+# Prepare writable SQLite data directory and permissions for non-root deno user
+RUN mkdir -p /data /deno-dir && chown -R deno:deno /app /data /deno-dir
+
 # Setup entrypoint script
 COPY docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER deno
 
 # Default environment configuration
 ENV HOST=0.0.0.0

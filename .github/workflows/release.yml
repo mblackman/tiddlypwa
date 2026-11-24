@@ -11,7 +11,31 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Check formatting
+        run: deno fmt --check --ignore='**/*.css' plugins server scripts tiddlers
+
+      - name: Lint server and scripts
+        run: deno lint server scripts
+
+      - name: Build default app
+        run: deno task build:all
+
+      - name: Run tests
+        run: deno task test
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
