@@ -10,7 +10,7 @@ Licensed under 0BSD, see license.tid.
 
 	exports.name = 'tiddlypwa-share-target';
 	exports.platforms = ['browser'];
-	exports.after = ['startup'];
+	exports.after = ['story'];
 	exports.synchronous = true;
 
 	exports.startup = function () {
@@ -27,8 +27,9 @@ Licensed under 0BSD, see license.tid.
 				content += (content ? '\n\n' : '') + sharedUrl;
 			}
 
-			const title = 'Shared Note: ' +
-				(sharedTitle || new $tw.utils.formatDateString(new Date(), 'YYYY-0MM-0DD 0hh:0mm:0ss'));
+			const baseTitle = 'Shared Note: ' +
+				(sharedTitle || $tw.utils.formatDateString(new Date(), 'YYYY-0MM-0DD 0hh:0mm:0ss'));
+			const title = typeof $tw.wiki.generateNewTitle === 'function' ? $tw.wiki.generateNewTitle(baseTitle) : baseTitle;
 
 			// Create the new tiddler
 			$tw.wiki.addTiddler(

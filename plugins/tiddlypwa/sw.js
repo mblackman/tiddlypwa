@@ -7,7 +7,17 @@ Formatted with `deno fmt`.
 \*/
 /// <reference no-default-lib="true" />
 /// <reference types="npm:@types/serviceworker" />
-const CACHE = 'tiddlypwa';
+const SCOPE_PATH = new URL('.', self.registration ? self.registration.scope : self.location.href).pathname;
+const CACHE = `tiddlypwa:v2:${SCOPE_PATH}`;
+const DEFAULT_NOTIFICATION_ICON = 'data:image/svg+xml;charset=utf-8,' +
+	encodeURIComponent(
+		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#2a5a9e"/><path d="M18 34l10 10 18-22" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+	);
+
+function cacheKeyFor(req) {
+	const u = new URL(typeof req === 'string' ? req : req.url);
+	return new Request(u.origin + u.pathname, { method: 'GET' });
+}
 
 function stripWeakEtag(x) {
 	return x && (x.startsWith('W/') ? x.slice(2) : x);
@@ -88,6 +98,7 @@ async function decryptPushEnvelope(ivB64, ctB64) {
 }
 
 async function fromNetCaching(req, cacheResp) {
+	const keyReq = cacheKeyFor(req);
 	try {
 		const etagOld = cacheResp ? stripWeakEtag(cacheResp.headers.get('etag')) : null;
 		let response;
@@ -95,21 +106,19 @@ async function fromNetCaching(req, cacheResp) {
 			// Background revalidation of a cached copy: a conditional request lets the server answer 304
 			// instead of re-sending (and us re-writing) the whole multi-megabyte app file on every launch.
 			// Setting If-None-Match bypasses the HTTP cache, so a 304 reaches us as-is.
-			response = await fetch(req.url, {
+			response = await fetch(keyReq.url, {
 				headers: { 'if-none-match': etagOld },
 				cache: 'no-store',
 				credentials: 'same-origin',
 			});
 			if (response.status === 304) return cacheResp;
 		} else {
-			// "preflight" for letting the server wake up if it's on a free service that suspends instances:
-			await fetch(req.url, { method: 'OPTIONS', cache: 'no-cache' }).catch(() => {});
-			response = await fetch(new Request(req), { cache: 'no-cache' });
+			response = await fetch(keyReq, { cache: 'no-cache', credentials: 'same-origin' });
 		}
 		if (response.ok) {
 			const ctype = response.headers.get('content-type') || '';
 			if (
-				(req.mode === 'navigate' || req.destination === 'document' || req.url.endsWith('.html')) &&
+				(req.mode === 'navigate' || req.destination === 'document' || keyReq.url.endsWith('.html')) &&
 				!ctype.includes('text/html')
 			) {
 				return cacheResp || response;
@@ -118,7 +127,7 @@ async function fromNetCaching(req, cacheResp) {
 			const changed = cacheResp && etagNew && etagOld && etagNew !== etagOld;
 			if (!cacheResp || changed || !etagNew) {
 				const cache = await caches.open(CACHE);
-				await cache.put(req, response.clone());
+				await cache.put(keyReq, response.clone());
 			}
 			if (changed) {
 				for (const client of await clients.matchAll()) {
@@ -135,12 +144,13 @@ async function fromNetCaching(req, cacheResp) {
 
 async function fromCache(evt) {
 	const cache = await caches.open(CACHE);
-	const response = await cache.match(evt.request, { ignoreSearch: true });
+	const keyReq = cacheKeyFor(evt.request);
+	const response = await cache.match(keyReq);
 	if (response) {
 		// Only the headers (ETag) are needed for revalidation, so pass a body-less copy: an unread
 		// clone() of a multi-megabyte response would make the browser buffer the whole body twice.
 		const headersOnly = new Response(null, { status: response.status, headers: response.headers });
-		evt.waitUntil(fromNetCaching(evt.request, headersOnly).catch(() => {}));
+		evt.waitUntil(fromNetCaching(keyReq, headersOnly).catch(() => {}));
 		return response;
 	} else {
 		return await fromNetCaching(evt.request);
@@ -161,7 +171,12 @@ self.addEventListener('message', (evt) =>
 
 self.addEventListener('fetch', (evt) => {
 	const url = new URL(evt.request.url);
-	if (evt.request.method === 'GET' && url.origin === location.origin && !url.pathname.endsWith('/tid.dly')) {
+	if (
+		evt.request.method === 'GET' &&
+		url.origin === location.origin &&
+		!url.pathname.endsWith('/tid.dly') &&
+		!url.pathname.endsWith('/bootstrap.json')
+	) {
 		evt.respondWith(fromCache(evt));
 	}
 });
@@ -217,7 +232,7 @@ self.addEventListener('push', (evt) => {
 
 		await self.registration.showNotification(String(notif.title), {
 			body: notif.body ? String(notif.body) : '',
-			icon: notif.icon || 'favicon.ico',
+			icon: notif.icon || DEFAULT_NOTIFICATION_ICON,
 			badge: notif.badge || undefined,
 			tag: notif.tag || undefined,
 			renotify: Boolean(notif.renotify),
@@ -297,7 +312,18 @@ self.addEventListener('notificationclick', (evt) => {
 });
 
 self.addEventListener('activate', (evt) => {
-	evt.waitUntil(clients.claim());
+	evt.waitUntil(
+		caches.keys().then((names) =>
+			Promise.all(
+				names
+					.filter((name) =>
+						name === 'tiddlypwa' ||
+						(name.startsWith('tiddlypwa:') && name.endsWith(`:${SCOPE_PATH}`) && name !== CACHE)
+					)
+					.map((name) => caches.delete(name)),
+			)
+		).then(() => clients.claim()),
+	);
 });
 
 self.addEventListener('install', (evt) => {
@@ -305,12 +331,11 @@ self.addEventListener('install', (evt) => {
 	evt.waitUntil(async function () {
 		const clientList = await clients.matchAll({ includeUncontrolled: true });
 		if (clientList.length > 0 && clientList[0].url) {
-			const u = new URL(clientList[0].url);
-			u.hash = '';
+			const cleanReq = cacheKeyFor(clientList[0].url);
 			try {
 				const cache = await caches.open(CACHE);
-				const cached = await cache.match(u.href);
-				await fromNetCaching(new Request(u.href), cached);
+				const cached = await cache.match(cleanReq);
+				await fromNetCaching(cleanReq, cached);
 			} catch (_err) {
 				// Network or DNS failure during install must not transition worker to redundant state
 			}

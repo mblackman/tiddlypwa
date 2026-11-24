@@ -43,8 +43,15 @@ Formatted with `deno fmt`.
 			try {
 				URL.revokeObjectURL(link.href);
 			} catch (_e) { /* probably was initial/empty */ }
+			const scopeUrl = new URL('./', location.href);
+			const pageUrl = new URL(location.pathname, location.origin);
+			const appName = $tw.wiki.renderTiddler('text/plain', '$:/plugins/mblackman/web-app-manifest/name');
 			const manifest = {
-				name: $tw.wiki.renderTiddler('text/plain', '$:/plugins/mblackman/web-app-manifest/name'),
+				id: pageUrl.href,
+				name: appName,
+				short_name: appName,
+				start_url: pageUrl.href,
+				scope: scopeUrl.href,
 				display: 'standalone',
 				theme_color: $tw.wiki.renderTiddler(
 					'text/plain',
@@ -56,7 +63,7 @@ Formatted with `deno fmt`.
 				),
 				icons: [],
 				share_target: {
-					action: location.pathname + '?share-target=1',
+					action: pageUrl.href + '?share-target=1',
 					method: 'GET',
 					enctype: 'application/x-www-form-urlencoded',
 					params: {
