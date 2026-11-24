@@ -414,3 +414,23 @@ Deno.test('WebPush SSRF: push_subscribe and sendWebPushNotification reject http,
 		console.warn = origWarn;
 	}
 });
+
+Deno.test('Batch 5 push: caps push_subscriptions at 32 per wiki', async () => {
+	const db = new SQLiteDatastore();
+	const tok = 'wiki-sub-cap-12345678901234567890';
+	db.createWiki(tok);
+	const sub = await createMockBrowserSubscription();
+	for (let i = 0; i < 35; i++) {
+		db.upsertPushSubscription({
+			token: tok,
+			endpoint: `https://fcm.googleapis.com/fcm/send/dev-${i}`,
+			p256dh: sub.keys.p256dh,
+			auth: sub.keys.auth,
+			created_at: 1000 + i,
+		});
+	}
+	const stored = db.listPushSubscriptions(tok);
+	assertEquals(stored.length, 32);
+	assertEquals(stored[0].endpoint.endsWith('/dev-3'), true);
+	assertEquals(stored[31].endpoint.endsWith('/dev-34'), true);
+});

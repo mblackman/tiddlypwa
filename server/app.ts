@@ -191,6 +191,13 @@ export class TiddlyPWASyncApp {
 	#adminGlobalFailures: { count: number; resetAt: number } = { count: 0, resetAt: 0 };
 	#adminVerifyInFlight = 0;
 	#monitorTickets: Map<string, { token: string; browserToken: string; expiresAt: number }> = new Map();
+	#shutdownCtrl = new AbortController();
+
+	shutdown(): void {
+		if (!this.#shutdownCtrl.signal.aborted) {
+			this.#shutdownCtrl.abort();
+		}
+	}
 
 	constructor(
 		db: Datastore,
@@ -1485,7 +1492,7 @@ export class TiddlyPWASyncApp {
 		return Response.json({ ticket }, { headers: { ...respHdrs, 'cache-control': 'no-store' }, status: 200 });
 	}
 
-	handleMonitor(query: URLSearchParams, pingIntervalMs = 25000) {
+	handleMonitor(query: URLSearchParams, pingIntervalMs = 25000, reqSignal?: AbortSignal) {
 		const token = query.get('token');
 		const halftoken = query.get('halftoken');
 		const authcode = query.get('authcode');
@@ -1528,8 +1535,34 @@ export class TiddlyPWASyncApp {
 			}
 			wikiToken = wiki.token;
 		}
-		let pushChan: BroadcastChannel;
+		const abortSignal = reqSignal ? AbortSignal.any([this.#shutdownCtrl.signal, reqSignal]) : this.#shutdownCtrl.signal;
+		if (abortSignal.aborted) {
+			return new Response(null, { headers: respHdrs, status: 503 });
+		}
+		let pushChan: BroadcastChannel | undefined;
 		let pingTimer: ReturnType<typeof setInterval> | undefined;
+		let cleaned = false;
+		let onAbort: (() => void) | undefined;
+		const cleanup = () => {
+			if (cleaned) return;
+			cleaned = true;
+			if (pingTimer !== undefined) {
+				clearInterval(pingTimer);
+				pingTimer = undefined;
+			}
+			if (pushChan) {
+				try {
+					pushChan.close();
+				} catch (_e) {
+					// ignore
+				}
+				pushChan = undefined;
+			}
+			if (onAbort) {
+				abortSignal.removeEventListener('abort', onAbort);
+				onAbort = undefined;
+			}
+		};
 		return new Response(
 			new ReadableStream({
 				start(ctrl) {
@@ -1539,8 +1572,7 @@ export class TiddlyPWASyncApp {
 						try {
 							if (evt.data.exclude !== browserToken) ctrl.enqueue('event: sync\ndata: 1\n\n');
 						} catch {
-							clearInterval(pingTimer);
-							pushChan.close();
+							cleanup();
 						}
 					};
 					if (pingIntervalMs > 0) {
@@ -1548,15 +1580,22 @@ export class TiddlyPWASyncApp {
 							try {
 								ctrl.enqueue(': keepalive\n\n');
 							} catch {
-								clearInterval(pingTimer);
-								pushChan.close();
+								cleanup();
 							}
 						}, pingIntervalMs);
 					}
+					onAbort = () => {
+						cleanup();
+						try {
+							ctrl.close();
+						} catch (_e) {
+							// ignore
+						}
+					};
+					abortSignal.addEventListener('abort', onAbort, { once: true });
 				},
 				cancel() {
-					pushChan.close();
-					if (pingTimer !== undefined) clearInterval(pingTimer);
+					cleanup();
 				},
 			}).pipeThrough(new TextEncoderStream()),
 			{
@@ -1696,7 +1735,7 @@ export class TiddlyPWASyncApp {
 		}
 		if (req.method === 'GET') {
 			const query = new URL(req.url).searchParams;
-			if (query.get('op') === 'monitor') return this.handleMonitor(query);
+			if (query.get('op') === 'monitor') return this.handleMonitor(query, 25000, req.signal);
 		}
 		return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 	}

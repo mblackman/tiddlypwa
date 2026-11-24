@@ -308,3 +308,58 @@ Deno.test('Tier 2 date parsing: date-only local time + default-time vs full time
 	const localSpecific = new Date(2026, 10, 15, 15, 45, 0, 0);
 	assertEquals(parseRuleTriggerAt(toTw17(localSpecific), '12:00', -719), localSpecific.getTime());
 });
+
+Deno.test('Batch 5 scheduler: concurrent reschedule during slow push delivery preserves new schedule', async () => {
+	const db = new SQLiteDatastore(':memory:');
+	const app = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const token = 'wiki_sched_race_12345678901234567890';
+	db.createWiki(token);
+	db.updateWikiAuthcode(token, 'auth1');
+	const sub = await generateMockBrowserSubscription();
+	db.upsertPushSubscription({
+		token,
+		endpoint: 'https://push.example.net/send/dev-race',
+		p256dh: sub.p256dh,
+		auth: sub.auth,
+		created_at: 1000,
+	});
+	db.upsertScheduledNotification({
+		token,
+		schedule_id: 'snoozable-1',
+		trigger_at: 5000,
+		payload_json: JSON.stringify({ mode: 'plain', notification: { title: 'Old' } }),
+		target_endpoint: null,
+		created_at: 1000,
+	});
+
+	const vapid = await getOrCreateVapidKeys(db);
+	const slowFetch: typeof fetch = async () => {
+		// Simulate client snoozing/rescheduling the same schedule_id while push fetch is in flight
+		await app.handle(
+			new Request('http://example.com/tid.dly', {
+				method: 'POST',
+				body: JSON.stringify({
+					tiddlypwa: 1,
+					op: 'sync_schedules',
+					token,
+					authcode: 'auth1',
+					upserts: [{
+						scheduleId: 'snoozable-1',
+						triggerAt: 999999999,
+						payload: { mode: 'plain', notification: { title: 'Snoozed' } },
+					}],
+				}),
+			}),
+		);
+		return new Response(null, { status: 201 });
+	};
+
+	await tickScheduledNotifications(db, vapid, { nowMs: 6000, fetchFn: slowFetch });
+	const remaining = db.listScheduledNotifications(token);
+	assertEquals(remaining.length, 1);
+	assertEquals(remaining[0].trigger_at, 999999999);
+});

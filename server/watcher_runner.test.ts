@@ -7,6 +7,7 @@ import { matchesCron, tickWatchers } from './scheduler.ts';
 import {
 	canonicalizeWatchedItems,
 	computeCodeHash,
+	executeWatcherModule,
 	extractJsonLd,
 	isBlockedIp,
 	parseAllowedHosts,
@@ -672,4 +673,89 @@ Deno.test('P1-7 & P2-5: parseXml exposes guid/description aliases, safeHostFetch
 
 	const src = Deno.readTextFileSync('./server/watcher_runner.ts');
 	assertEquals(src.includes('allowHost: true'), true);
+});
+
+Deno.test('Batch 5 watcher: caps results at 25 and aborts commit if watcher is deleted mid-run', async () => {
+	const db = new SQLiteDatastore(':memory:');
+	const tok = 'wiki-watcher-cap-123456789012345678';
+	db.createWiki(tok);
+	const { publicKeyB64Url, privateKey } = await generateEd25519TestKeyPair();
+	db.updateWikiWatcherPubKey(tok, publicKeyB64Url);
+	const vapid = await getOrCreateVapidKeys(db);
+
+	const code40 = `
+		export async function evaluate() {
+			return Array.from({ length: 40 }, (_, i) => ({
+				itemTitle: 'Item ' + i,
+				notify: { title: 'N ' + i },
+				createTiddler: { title: 'T ' + i, text: 'body' },
+			}));
+		}
+	`;
+	const codeHash40 = await computeCodeHash(code40);
+	const sig40 = await signWatcherPayload(privateKey, {
+		watcherId: 'w-cap',
+		codeHash: codeHash40,
+		allowedHosts: '',
+		scheduleCron: '* * * * *',
+		timezone: 'UTC',
+		watchedItems: [],
+	});
+	db.upsertWatcherModule({
+		token: tok,
+		watcher_id: 'w-cap',
+		code_hash: codeHash40,
+		code_source: code40,
+		allowed_hosts: '',
+		schedule_cron: '* * * * *',
+		timezone: 'UTC',
+		watched_items: '[]',
+		signature: sig40,
+	});
+	const row40 = db.listWatcherModules(tok)[0];
+	const summary40 = await executeWatcherModule(db, row40, vapid, {
+		pushFetchFn: () => Promise.resolve(new Response(null, { status: 201 })),
+	});
+	assertEquals(summary40.ok, true);
+	assertEquals(summary40.patchesStaged, 25);
+	assertEquals(db.listPendingPatches(tok).length, 25);
+
+	// Deleting watcher mid-run aborts staging patches and sending push notifications
+	const codeMidDel = `
+		export async function evaluate(_items, host) {
+			await host.fetch('https://example.com/slow');
+			return [{ notify: { title: 'ShouldNotSend' }, createTiddler: { title: 'Ghost', text: 'nope' } }];
+		}
+	`;
+	const hashDel = await computeCodeHash(codeMidDel);
+	const sigDel = await signWatcherPayload(privateKey, {
+		watcherId: 'w-del',
+		codeHash: hashDel,
+		allowedHosts: 'example.com',
+		scheduleCron: '* * * * *',
+		timezone: 'UTC',
+		watchedItems: [],
+	});
+	db.upsertWatcherModule({
+		token: tok,
+		watcher_id: 'w-del',
+		code_hash: hashDel,
+		code_source: codeMidDel,
+		allowed_hosts: 'example.com',
+		schedule_cron: '* * * * *',
+		timezone: 'UTC',
+		watched_items: '[]',
+		signature: sigDel,
+	});
+	const rowDel = db.listWatcherModules(tok).find((r) => r.watcher_id === 'w-del')!;
+	const summaryDel = await executeWatcherModule(db, rowDel, vapid, {
+		resolveDnsFn: (_, t) => Promise.resolve(t === 'A' ? ['93.184.216.34'] : []),
+		fetchFn: () => {
+			db.deleteWatcherModule(tok, 'w-del');
+			return Promise.resolve(new Response('ok', { status: 200 }));
+		},
+	});
+	assertEquals(summaryDel.ok, false);
+	assertEquals(summaryDel.patchesStaged, 0);
+	assertEquals(db.listPendingPatches(tok).some((p) => p.watcher_id === 'w-del'), false);
 });

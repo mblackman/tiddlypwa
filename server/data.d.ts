@@ -118,11 +118,13 @@ export interface Datastore {
 	getWikiTombstoneHorizon(token: string): number;
 	pruneTombstones(cutoffMs: number): number;
 	upsertPushSubscription(sub: PushSubscriptionRow): void;
+	enforcePushSubscriptionCap(token: string, maxSubs?: number): void;
 	deletePushSubscription(token: string, endpoint: string): void;
 	deleteAllPushSubscriptions(token: string): void;
 	listPushSubscriptions(token: string): Array<PushSubscriptionRow>;
 	upsertWatcherModule(watcher: Omit<WatcherModuleRow, 'state_json' | 'last_run_at' | 'last_error'>): void;
 	deleteWatcherModule(token: string, watcherId: string): void;
+	getWatcherModule(token: string, watcherId: string): WatcherModuleRow | undefined;
 	listWatcherModules(token: string): Array<WatcherModuleRow>;
 	getAllWatcherModules(): Array<WatcherModuleRow>;
 	updateWatcherRunState(
@@ -137,6 +139,8 @@ export interface Datastore {
 	deletePendingPatches(token: string, patchIds: string[]): void;
 	upsertScheduledNotification(row: ScheduledNotificationRow): void;
 	deleteScheduledNotifications(token: string, scheduleIds: string[]): void;
+	deleteScheduledNotificationIfUnchanged(token: string, scheduleId: string, createdAt: number): boolean;
+	runMaintenance(nowMs: number): { prunedPatches: number; prunedFiles: number };
 	listDueScheduledNotifications(nowMs: number): Array<ScheduledNotificationRow>;
 	listScheduledNotifications(token: string): Array<ScheduledNotificationRow>;
 }

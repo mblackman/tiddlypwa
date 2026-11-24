@@ -950,16 +950,38 @@ const hostParsers = new Function(
 
 export const { extractJsonLd, decodeHtmlEntities, queryHtml, parseXml } = hostParsers;
 
-// Serial execution queue so at most 1 watcher Worker runs at a time
-let watcherQueueTail: Promise<unknown> = Promise.resolve();
+const MAX_CONCURRENT_WATCHERS = 2;
+let activeWatcherWorkers = 0;
+const workerWaiters: Array<() => void> = [];
+const activeWatchers = new Set<string>();
 
-function enqueueWatcherTask<T>(fn: () => Promise<T>): Promise<T> {
-	const next = watcherQueueTail.then(fn, fn);
-	watcherQueueTail = next.then(
-		() => undefined,
-		() => undefined,
-	);
-	return next;
+async function acquireWatcherSlot(): Promise<void> {
+	if (activeWatcherWorkers < MAX_CONCURRENT_WATCHERS) {
+		activeWatcherWorkers++;
+		return;
+	}
+	await new Promise<void>((resolve) => {
+		workerWaiters.push(resolve);
+	});
+}
+
+function releaseWatcherSlot(): void {
+	const next = workerWaiters.shift();
+	if (next) {
+		// Transfer the active slot directly to the queued waiter so activeWatcherWorkers stays <= MAX_CONCURRENT_WATCHERS
+		next();
+	} else {
+		activeWatcherWorkers = Math.max(0, activeWatcherWorkers - 1);
+	}
+}
+
+async function runWatcherInPool<T>(fn: () => Promise<T>): Promise<T> {
+	await acquireWatcherSlot();
+	try {
+		return await fn();
+	} finally {
+		releaseWatcherSlot();
+	}
 }
 
 export function runSandboxedWatcher(
@@ -969,7 +991,7 @@ export function runSandboxedWatcher(
 	currentState: WatcherState,
 	options?: WatcherRunnerOptions,
 ): Promise<{ results: WatcherResultItem[]; nextState: WatcherState }> {
-	return enqueueWatcherTask(() =>
+	return runWatcherInPool(() =>
 		new Promise((resolve, reject) => {
 			const timeoutMs = options?.timeoutMs ?? 8_000;
 			const allowedHosts = parseAllowedHosts(allowedHostsRaw);
@@ -1194,38 +1216,11 @@ export async function executeWatcherModule(
 	options?: WatcherRunnerOptions,
 ): Promise<WatcherExecutionSummary> {
 	const nowMs = options?.nowMs ?? Date.now();
-	let watchedItems: WatchedItem[] = [];
-	try {
-		const parsed = JSON.parse(row.watched_items || '[]');
-		if (Array.isArray(parsed)) watchedItems = parsed;
-	} catch (_e) {
-		watchedItems = [];
-	}
-
-	let currentState: WatcherState = {};
-	try {
-		const parsed = JSON.parse(row.state_json || '{}');
-		if (parsed && typeof parsed === 'object') currentState = parsed;
-	} catch (_e) {
-		currentState = {};
-	}
-
-	let runOut: { results: WatcherResultItem[]; nextState: WatcherState };
-	try {
-		runOut = await runSandboxedWatcher(
-			row.code_source,
-			watchedItems,
-			row.allowed_hosts,
-			currentState,
-			options,
-		);
-	} catch (err) {
-		const errMsg = String((err as Error)?.message || err);
-		// Preserve existing state_json so conditional HTTP cache (ETag/Last-Modified) is NOT advanced on failure
-		db.updateWatcherRunState(row.token, row.watcher_id, row.state_json || '{}', nowMs, errMsg);
+	const watcherKey = `${row.token}:${row.watcher_id}`;
+	if (activeWatchers.has(watcherKey)) {
 		return {
 			ok: false,
-			error: errMsg,
+			error: 'Watcher execution already in progress',
 			results: [],
 			notificationsSent: 0,
 			patchesStaged: 0,
@@ -1233,110 +1228,202 @@ export async function executeWatcherModule(
 		};
 	}
 
-	const validResults = Array.isArray(runOut.results) ? runOut.results : [];
-	const stagedPatches: Array<{ patchId: string; patchJson: string }> = [];
-
-	for (const res of validResults) {
-		if (!res || typeof res !== 'object') continue;
-		if (res.patchTarget || res.createTiddler) {
-			const itemTitle = typeof res.itemTitle === 'string'
-				? res.itemTitle
-				: (res.patchTarget?.title || res.createTiddler?.title || '');
-			const patchSpec = {
-				itemTitle,
-				...(res.patchTarget ? { patchTarget: res.patchTarget } : {}),
-				...(res.createTiddler ? { createTiddler: res.createTiddler } : {}),
+	activeWatchers.add(watcherKey);
+	try {
+		const latestRow = db.getWatcherModule(row.token, row.watcher_id);
+		const initialWiki = db.getWiki(row.token);
+		if (!latestRow || !initialWiki?.watcher_pubkey) {
+			return {
+				ok: false,
+				error: 'Watcher not found or wiki reauthenticated',
+				results: [],
+				notificationsSent: 0,
+				patchesStaged: 0,
+				lastRunAt: nowMs,
 			};
-			const patchId = await computeDeterministicPatchId(row.watcher_id, itemTitle, {
-				patchTarget: res.patchTarget,
-				createTiddler: res.createTiddler,
-			});
-			stagedPatches.push({
-				patchId,
-				patchJson: JSON.stringify(patchSpec),
-			});
 		}
-	}
 
-	const nextStateJson = JSON.stringify(runOut.nextState);
-	db.transaction(() => {
-		for (const p of stagedPatches) {
-			db.upsertPendingPatch({
-				patch_id: p.patchId,
-				token: row.token,
-				watcher_id: row.watcher_id,
-				patch_json: p.patchJson,
-				created_at: nowMs,
-			});
-		}
-		db.updateWatcherRunState(row.token, row.watcher_id, nextStateJson, nowMs, null);
-	});
-
-	if (stagedPatches.length > 0) {
+		let watchedItems: WatchedItem[] = [];
 		try {
-			const pushChan = new BroadcastChannel(row.token);
-			pushChan.postMessage({ exclude: '' });
-			pushChan.close();
+			const parsed = JSON.parse(latestRow.watched_items || '[]');
+			if (Array.isArray(parsed)) watchedItems = parsed;
 		} catch (_e) {
-			// ignore BroadcastChannel errors if closed
+			watchedItems = [];
 		}
-	}
 
-	let notificationsSent = 0;
-	for (const res of validResults) {
-		if (!res || typeof res !== 'object' || !res.notify || typeof res.notify !== 'object') continue;
-		const notify = res.notify;
-		if (typeof notify.title !== 'string' || !notify.title.trim()) continue;
-		const actionPatches = res.actionPatches || notify.actionPatches || undefined;
-		const hasExplicitNavigateTo = notify.navigateTo !== undefined;
-		const hasExplicitOpenUrl = typeof notify.openUrl === 'string' && notify.openUrl.trim().length > 0;
-		const navigateTo = notify.clickAction === 'none' || notify.navigateTo === null
-			? undefined
-			: (hasExplicitNavigateTo
-				? (notify.navigateTo || undefined)
-				: (hasExplicitOpenUrl
-					? undefined
-					: ((typeof res.createTiddler?.title === 'string' ? res.createTiddler.title : undefined) ||
-						res.itemTitle ||
-						undefined)));
-
-		const envelope = {
-			mode: 'plain',
-			notification: {
-				title: notify.title,
-				body: notify.body || '',
-				icon: notify.icon || undefined,
-				tag: notify.tag || `watcher-${row.watcher_id}`,
-				actions: Array.isArray(notify.actions) ? notify.actions : undefined,
-				data: {
-					...(notify.data && typeof notify.data === 'object' ? notify.data : {}),
-					watcherId: row.watcher_id,
-					itemTitle: res.itemTitle,
-					navigateTo,
-					openUrl: notify.openUrl || undefined,
-					clickAction: notify.clickAction || undefined,
-					actionPatches,
-				},
-			},
-		};
+		let currentState: WatcherState = {};
 		try {
-			const pushRes = await broadcastWikiPush(db, row.token, envelope, vapidKeys, {
-				targetEndpoint: null,
-				subject: options?.subject,
-				fetchFn: options?.pushFetchFn ?? options?.fetchFn,
-			});
-			notificationsSent += pushRes.sent;
-		} catch (e) {
-			console.error(`Failed to broadcast push notification for watcher ${row.watcher_id}:`, e);
+			const parsed = JSON.parse(latestRow.state_json || '{}');
+			if (parsed && typeof parsed === 'object') currentState = parsed;
+		} catch (_e) {
+			currentState = {};
 		}
-	}
 
-	return {
-		ok: true,
-		error: null,
-		results: validResults,
-		notificationsSent,
-		patchesStaged: stagedPatches.length,
-		lastRunAt: nowMs,
-	};
+		let runOut: { results: WatcherResultItem[]; nextState: WatcherState };
+		try {
+			runOut = await runSandboxedWatcher(
+				latestRow.code_source,
+				watchedItems,
+				latestRow.allowed_hosts,
+				currentState,
+				options,
+			);
+		} catch (err) {
+			const errMsg = String((err as Error)?.message || err);
+			// Preserve existing state_json so conditional HTTP cache (ETag/Last-Modified) is NOT advanced on failure
+			const currentRow = db.getWatcherModule(row.token, row.watcher_id);
+			const currentWiki = db.getWiki(row.token);
+			if (
+				currentRow &&
+				currentRow.code_hash === latestRow.code_hash &&
+				currentRow.signature === latestRow.signature &&
+				currentWiki?.watcher_pubkey
+			) {
+				db.updateWatcherRunState(row.token, row.watcher_id, latestRow.state_json || '{}', nowMs, errMsg);
+			}
+			return {
+				ok: false,
+				error: errMsg,
+				results: [],
+				notificationsSent: 0,
+				patchesStaged: 0,
+				lastRunAt: nowMs,
+			};
+		}
+
+		const validResults = Array.isArray(runOut.results) ? runOut.results.slice(0, 25) : [];
+		const stagedPatches: Array<{ patchId: string; patchJson: string }> = [];
+
+		for (const res of validResults) {
+			if (!res || typeof res !== 'object') continue;
+			if (res.patchTarget || res.createTiddler) {
+				const itemTitle = typeof res.itemTitle === 'string'
+					? res.itemTitle
+					: (res.patchTarget?.title || res.createTiddler?.title || '');
+				const patchSpec = {
+					itemTitle,
+					...(res.patchTarget ? { patchTarget: res.patchTarget } : {}),
+					...(res.createTiddler ? { createTiddler: res.createTiddler } : {}),
+				};
+				const patchJson = JSON.stringify(patchSpec);
+				if (patchJson.length > 65_536) continue;
+				const patchId = await computeDeterministicPatchId(row.watcher_id, itemTitle, {
+					patchTarget: res.patchTarget,
+					createTiddler: res.createTiddler,
+				});
+				stagedPatches.push({
+					patchId,
+					patchJson,
+				});
+			}
+		}
+
+		const nextStateJson = JSON.stringify(runOut.nextState);
+		let committed = false;
+		db.transaction(() => {
+			const currentRow = db.getWatcherModule(row.token, row.watcher_id);
+			const currentWiki = db.getWiki(row.token);
+			if (
+				!currentRow ||
+				currentRow.code_hash !== latestRow.code_hash ||
+				currentRow.signature !== latestRow.signature ||
+				!currentWiki?.watcher_pubkey
+			) {
+				return;
+			}
+			for (const p of stagedPatches) {
+				db.upsertPendingPatch({
+					patch_id: p.patchId,
+					token: row.token,
+					watcher_id: row.watcher_id,
+					patch_json: p.patchJson,
+					created_at: nowMs,
+				});
+			}
+			db.updateWatcherRunState(row.token, row.watcher_id, nextStateJson, nowMs, null);
+			committed = true;
+		});
+
+		if (!committed) {
+			return {
+				ok: false,
+				error: 'Watcher modified or deleted during execution',
+				results: [],
+				notificationsSent: 0,
+				patchesStaged: 0,
+				lastRunAt: nowMs,
+			};
+		}
+
+		if (stagedPatches.length > 0) {
+			try {
+				const pushChan = new BroadcastChannel(row.token);
+				pushChan.postMessage({ exclude: '' });
+				pushChan.close();
+			} catch (_e) {
+				// ignore BroadcastChannel errors if closed
+			}
+		}
+
+		let notificationsSent = 0;
+		for (const res of validResults) {
+			if (!res || typeof res !== 'object' || !res.notify || typeof res.notify !== 'object') continue;
+			const notify = res.notify;
+			if (typeof notify.title !== 'string' || !notify.title.trim()) continue;
+			const actionPatches = res.actionPatches || notify.actionPatches || undefined;
+			const hasExplicitNavigateTo = notify.navigateTo !== undefined;
+			const hasExplicitOpenUrl = typeof notify.openUrl === 'string' && notify.openUrl.trim().length > 0;
+			const navigateTo = notify.clickAction === 'none' || notify.navigateTo === null
+				? undefined
+				: (hasExplicitNavigateTo
+					? (notify.navigateTo || undefined)
+					: (hasExplicitOpenUrl
+						? undefined
+						: ((typeof res.createTiddler?.title === 'string' ? res.createTiddler.title : undefined) ||
+							res.itemTitle ||
+							undefined)));
+
+			const envelope = {
+				mode: 'plain',
+				notification: {
+					title: notify.title,
+					body: notify.body || '',
+					icon: notify.icon || undefined,
+					tag: notify.tag || `watcher-${row.watcher_id}`,
+					actions: Array.isArray(notify.actions) ? notify.actions : undefined,
+					data: {
+						...(notify.data && typeof notify.data === 'object' ? notify.data : {}),
+						watcherId: row.watcher_id,
+						itemTitle: res.itemTitle,
+						navigateTo,
+						openUrl: notify.openUrl || undefined,
+						clickAction: notify.clickAction || undefined,
+						actionPatches,
+					},
+				},
+			};
+			if (utfenc.encode(JSON.stringify(envelope)).byteLength > 4096) continue;
+			try {
+				const pushRes = await broadcastWikiPush(db, row.token, envelope, vapidKeys, {
+					targetEndpoint: null,
+					subject: options?.subject,
+					fetchFn: options?.pushFetchFn ?? options?.fetchFn,
+				});
+				notificationsSent += pushRes.sent;
+			} catch (e) {
+				console.error(`Failed to broadcast push notification for watcher ${row.watcher_id}:`, e);
+			}
+		}
+
+		return {
+			ok: true,
+			error: null,
+			results: validResults,
+			notificationsSent,
+			patchesStaged: stagedPatches.length,
+			lastRunAt: nowMs,
+		};
+	} finally {
+		activeWatchers.delete(watcherKey);
+	}
 }

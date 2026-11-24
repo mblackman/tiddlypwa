@@ -776,24 +776,44 @@ export class SQLiteDatastore implements Datastore {
 	}
 
 	upsertPushSubscription(sub: PushSubscriptionRow): void {
+		this.transaction(() => {
+			this.query(
+				sql`
+					INSERT INTO push_subscriptions (token, endpoint, p256dh, auth, ua_hint, created_at)
+					VALUES (:token, :endpoint, :p256dh, :auth, :ua_hint, :created_at)
+					ON CONFLICT (token, endpoint) DO UPDATE SET
+						p256dh = excluded.p256dh,
+						auth = excluded.auth,
+						ua_hint = excluded.ua_hint,
+						created_at = excluded.created_at
+				`,
+				{
+					token: sub.token,
+					endpoint: sub.endpoint,
+					p256dh: sub.p256dh,
+					auth: sub.auth,
+					ua_hint: sub.ua_hint ?? null,
+					created_at: sub.created_at,
+				},
+			);
+			this.enforcePushSubscriptionCap(sub.token, 32);
+		});
+	}
+
+	enforcePushSubscriptionCap(token: string, maxSubs = 32): void {
 		this.query(
 			sql`
-				INSERT INTO push_subscriptions (token, endpoint, p256dh, auth, ua_hint, created_at)
-				VALUES (:token, :endpoint, :p256dh, :auth, :ua_hint, :created_at)
-				ON CONFLICT (token, endpoint) DO UPDATE SET
-					p256dh = excluded.p256dh,
-					auth = excluded.auth,
-					ua_hint = excluded.ua_hint,
-					created_at = excluded.created_at
+				DELETE FROM push_subscriptions
+				WHERE rowid IN (
+					SELECT rid FROM (
+						SELECT rowid AS rid,
+							ROW_NUMBER() OVER (ORDER BY created_at DESC, rowid DESC) AS rn
+						FROM push_subscriptions
+						WHERE token = :token
+					) WHERE rn > :maxSubs
+				)
 			`,
-			{
-				token: sub.token,
-				endpoint: sub.endpoint,
-				p256dh: sub.p256dh,
-				auth: sub.auth,
-				ua_hint: sub.ua_hint ?? null,
-				created_at: sub.created_at,
-			},
+			{ token, maxSubs },
 		);
 	}
 
@@ -838,6 +858,17 @@ export class SQLiteDatastore implements Datastore {
 			token,
 			watcherId,
 		});
+	}
+
+	getWatcherModule(token: string, watcherId: string): WatcherModuleRow | undefined {
+		const rows = this.queryEntries<WatcherModuleRow>(
+			sql`
+				SELECT token, watcher_id, code_hash, code_source, allowed_hosts, schedule_cron, timezone, watched_items, signature, state_json, last_run_at, last_error
+				FROM watcher_modules WHERE token = :token AND watcher_id = :watcherId
+			`,
+			{ token, watcherId },
+		);
+		return rows[0];
 	}
 
 	listWatcherModules(token: string): Array<WatcherModuleRow> {
@@ -920,7 +951,7 @@ export class SQLiteDatastore implements Datastore {
 					trigger_at = excluded.trigger_at,
 					payload_json = excluded.payload_json,
 					target_endpoint = excluded.target_endpoint,
-					created_at = excluded.created_at
+					created_at = MAX(scheduled_notifications.created_at + 1, excluded.created_at)
 			`,
 			{
 				token: row.token,
@@ -943,6 +974,55 @@ export class SQLiteDatastore implements Datastore {
 				);
 			}
 		});
+	}
+
+	deleteScheduledNotificationIfUnchanged(token: string, scheduleId: string, createdAt: number): boolean {
+		this.query(
+			sql`
+				DELETE FROM scheduled_notifications
+				WHERE token = :token AND schedule_id = :scheduleId AND created_at = :createdAt
+			`,
+			{ token, scheduleId, createdAt },
+		);
+		return this.#changes > 0;
+	}
+
+	runMaintenance(nowMs: number): { prunedPatches: number; prunedFiles: number } {
+		const cutoffMs = nowMs - 30 * 24 * 60 * 60 * 1000;
+		let prunedPatches = 0;
+		let prunedFiles = 0;
+		this.transaction(() => {
+			this.query(sql`DELETE FROM pending_watcher_patches WHERE created_at < :cutoffMs`, { cutoffMs });
+			prunedPatches += this.#changes;
+			this.query(
+				sql`
+					DELETE FROM pending_watcher_patches
+					WHERE rowid IN (
+						SELECT rid FROM (
+							SELECT rowid AS rid,
+								ROW_NUMBER() OVER (PARTITION BY token ORDER BY created_at DESC, rowid DESC) AS rn
+							FROM pending_watcher_patches
+						) WHERE rn > 200
+					)
+				`,
+			);
+			prunedPatches += this.#changes;
+			this.query(
+				sql`
+					DELETE FROM files
+					WHERE NOT EXISTS (SELECT 1 FROM wikifiles WHERE wikifiles.etag = files.etag)
+				`,
+			);
+			prunedFiles = this.#changes;
+		});
+		if (this.#isFileBacked) {
+			try {
+				this.#db.exec('PRAGMA wal_checkpoint(PASSIVE);');
+			} catch (_e) {
+				// ignore checkpoint failures during maintenance
+			}
+		}
+		return { prunedPatches, prunedFiles };
 	}
 
 	listDueScheduledNotifications(nowMs: number): Array<ScheduledNotificationRow> {

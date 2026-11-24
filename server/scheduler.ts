@@ -187,7 +187,7 @@ export async function tickScheduledNotifications(
 				failed++;
 			}
 		}
-		db.deleteScheduledNotifications(row.token, [row.schedule_id]);
+		db.deleteScheduledNotificationIfUnchanged(row.token, row.schedule_id, row.created_at);
 	}
 
 	return { processed, sent, failed, pruned };
@@ -304,6 +304,7 @@ export function startSchedulerLoop(app: TiddlyPWASyncApp, intervalMs = 30_000): 
 			if (nowMs - lastTombstonePruneMs >= 86_400_000) {
 				lastTombstonePruneMs = nowMs;
 				app.db.pruneTombstones(nowMs - TOMBSTONE_TTL_MS);
+				app.db.runMaintenance(nowMs);
 			}
 			const vapid = await app.ensureVapidKeys();
 			await tickScheduledNotifications(app.db, vapid, {

@@ -56,18 +56,68 @@ export async function listen(args: any) {
 	await app.ensureVapidKeys();
 	await app.loadDefaultApp();
 	const schedulerIntervalMs = Number(args.schedulerinterval ?? envvar('SCHEDULER_INTERVAL_MS') ?? 30_000);
-	startSchedulerLoop(app, schedulerIntervalMs);
+	const scheduler = startSchedulerLoop(app, schedulerIntervalMs);
 
 	const socketPath = args.socket ?? envvar('SOCKET');
 	const port = Number(args.port ?? envvar('PORT') ?? 8000);
 	const hostname = args.host ?? envvar('HOST');
 
 	if (socketPath) {
+		try {
+			await Deno.remove(socketPath);
+		} catch (e) {
+			if (!(e instanceof Deno.errors.NotFound)) throw e;
+		}
 		console.log('Listening on socket:', socketPath);
-		await Deno.serve({ path: socketPath }, (req, info) => app.handle(req, info)).finished;
 	} else {
 		console.log(`Listening on http://${hostname ?? '0.0.0.0'}:${port}`);
-		await Deno.serve({ port, hostname }, (req, info) => app.handle(req, info)).finished;
+	}
+
+	const serveAbort = new AbortController();
+	const server = socketPath
+		? Deno.serve({ path: socketPath, signal: serveAbort.signal }, (req, info) => app.handle(req, info))
+		: Deno.serve({ port, hostname, signal: serveAbort.signal }, (req, info) => app.handle(req, info));
+
+	let shuttingDown = false;
+	const onSignal = async () => {
+		if (shuttingDown) return;
+		shuttingDown = true;
+		Deno.removeSignalListener('SIGTERM', onSignal);
+		Deno.removeSignalListener('SIGINT', onSignal);
+		scheduler.stop();
+		app.shutdown();
+		serveAbort.abort();
+		let drainTimer: ReturnType<typeof setTimeout> | undefined;
+		await Promise.race([
+			server.finished.catch(() => {}),
+			new Promise<void>((resolve) => {
+				drainTimer = setTimeout(resolve, 5000);
+			}),
+		]);
+		if (drainTimer !== undefined) clearTimeout(drainTimer);
+		app.db.checkpointAndClose();
+		if (socketPath) {
+			try {
+				await Deno.remove(socketPath);
+			} catch (_e) {
+				// ignore if already removed
+			}
+		}
+		Deno.exit(0);
+	};
+
+	Deno.addSignalListener('SIGTERM', onSignal);
+	Deno.addSignalListener('SIGINT', onSignal);
+	try {
+		await server.finished;
+	} finally {
+		Deno.removeSignalListener('SIGTERM', onSignal);
+		Deno.removeSignalListener('SIGINT', onSignal);
+		if (!shuttingDown) {
+			scheduler.stop();
+			app.shutdown();
+			app.db.checkpointAndClose();
+		}
 	}
 }
 

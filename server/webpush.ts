@@ -455,24 +455,28 @@ export async function broadcastWikiPush(
 	let failed = 0;
 	let pruned = 0;
 
-	await Promise.all(
-		subs.map(async (sub) => {
-			try {
-				const res = await sendWebPushNotification(sub, payload, vapidKeys, options);
-				if (res.ok) {
-					sent++;
-				} else {
-					failed++;
-					if (res.expired) {
-						db.deletePushSubscription(token, sub.endpoint);
-						pruned++;
+	const BATCH_SIZE = 8;
+	for (let i = 0; i < subs.length; i += BATCH_SIZE) {
+		const batch = subs.slice(i, i + BATCH_SIZE);
+		await Promise.all(
+			batch.map(async (sub) => {
+				try {
+					const res = await sendWebPushNotification(sub, payload, vapidKeys, options);
+					if (res.ok) {
+						sent++;
+					} else {
+						failed++;
+						if (res.expired) {
+							db.deletePushSubscription(token, sub.endpoint);
+							pruned++;
+						}
 					}
+				} catch (_e) {
+					failed++;
 				}
-			} catch (_e) {
-				failed++;
-			}
-		}),
-	);
+			}),
+		);
+	}
 
 	return { sent, failed, pruned };
 }

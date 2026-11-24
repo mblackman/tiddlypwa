@@ -1267,3 +1267,24 @@ Deno.test('Batch 4 limits & streaming: pre-auth 413 body limit, payload bounds, 
 
 	await deleteWiki(tok);
 });
+
+Deno.test('Batch 5 shutdown: app.shutdown closes active SSE monitor streams cleanly', async () => {
+	const db = new SQLiteDatastore();
+	const sApp = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const tok = 'wiki-sse-shutdown-1234567890123456';
+	db.createWiki(tok);
+
+	const resp = sApp.handleMonitor(new URLSearchParams({ token: tok, browserToken: 'b1' }), 50);
+	assertEquals(resp.status, 200);
+	const reader = resp.body!.getReader();
+	const first = await reader.read();
+	assertEquals(first.done, false);
+
+	sApp.shutdown();
+	const closed = await reader.read();
+	assertEquals(closed.done, true);
+});

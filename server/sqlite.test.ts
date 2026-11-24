@@ -126,3 +126,40 @@ Deno.test('Batch 4 sqlite: tiddlersChangedPage keyset pagination handles duplica
 	assertEquals(collected.length, 45);
 	assertEquals(new Set(collected.map((c) => c.thashHex)).size, 45);
 });
+
+Deno.test('Batch 5 maintenance: runMaintenance prunes >30d patches, caps 200 per wiki, and sweeps orphaned files', () => {
+	const db = new SQLiteDatastore();
+	const tok = 'wiki-maint-12345678901234567890';
+	db.createWiki(tok);
+	const now = 1_800_000_000_000;
+	// Insert 1 expired patch (>30 days) + 205 recent patches
+	db.upsertPendingPatch({
+		patch_id: 'old-patch',
+		token: tok,
+		watcher_id: 'w1',
+		patch_json: '{}',
+		created_at: now - 31 * 24 * 60 * 60 * 1000,
+	});
+	for (let i = 0; i < 205; i++) {
+		db.upsertPendingPatch({
+			patch_id: `p-${i}`,
+			token: tok,
+			watcher_id: 'w1',
+			patch_json: '{}',
+			created_at: now - 1000 + i,
+		});
+	}
+	// Insert an orphaned file blob not referenced in wikifiles
+	db.storeFile({
+		etag: new Uint8Array([1, 2, 3, 4]),
+		rawsize: 4,
+		ctype: 'text/plain',
+		body: new Uint8Array([9, 9]),
+	});
+
+	const res = db.runMaintenance(now);
+	assertEquals(res.prunedPatches, 6);
+	assertEquals(res.prunedFiles, 1);
+	assertEquals(db.listPendingPatches(tok).length, 200);
+	assertEquals(db.fileExists(new Uint8Array([1, 2, 3, 4])), false);
+});
