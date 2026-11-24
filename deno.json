@@ -19,7 +19,8 @@
 		"@std/encoding/base64": "jsr:@std/encoding@^1.0.0/base64",
 		"@std/encoding/base64url": "jsr:@std/encoding@^1.0.0/base64url",
 		"argon2ian": "https://deno.land/x/argon2ian@2.0.0/src/argon2.ts",
-		"cliffy/prompt/secret": "https://deno.land/x/cliffy@v0.25.7/prompt/secret.ts"
+		"cliffy/prompt/secret": "https://deno.land/x/cliffy@v0.25.7/prompt/secret.ts",
+		"tiddlywiki": "npm:tiddlywiki@5.4.1"
 	},
 	"lint": {
 		"rules": {

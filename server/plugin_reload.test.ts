@@ -1,29 +1,10 @@
 import { assertEquals } from '@std/assert';
-import * as path from 'node:path';
-import * as fs from 'node:fs';
+import tiddlywiki from 'tiddlywiki/boot/boot.js';
 
-function findTiddlyWikiBoot(): string {
-	const homedir = Deno.env.get('HOME') || '';
-	const candidates: string[] = [
-		path.join(Deno.cwd(), 'node_modules/tiddlywiki/boot/boot.js'),
-	];
-	const npxDir = path.join(homedir, '.npm/_npx');
-	if (fs.existsSync(npxDir)) {
-		for (const entry of fs.readdirSync(npxDir)) {
-			candidates.push(path.join(npxDir, entry, 'node_modules/tiddlywiki/boot/boot.js'));
-		}
-	}
-	for (const candidate of candidates) {
-		if (fs.existsSync(candidate)) return candidate;
-	}
-	throw new Error('Could not find tiddlywiki boot.js. Ensure tiddlywiki is installed or cached via npx.');
-}
-
-function setupTiddlyWiki(require: (id: string) => any) {
+function setupTiddlyWiki() {
 	Deno.env.set('TIDDLYWIKI_PLUGIN_PATH', 'plugins');
 	Deno.env.set('TIDDLYWIKI_THEME_PATH', 'themes');
-	const bootPath = findTiddlyWikiBoot();
-	const $tw = require(bootPath).TiddlyWiki();
+	const $tw = tiddlywiki.TiddlyWiki();
 	$tw.boot.argv = ['.'];
 	$tw.boot.boot();
 
@@ -74,9 +55,7 @@ function setupTiddlyWiki(require: (id: string) => any) {
 }
 
 Deno.test('Plugin Reload Detection: $:/temp/info-plugin updates do NOT trigger reload warning', async () => {
-	const { createRequire } = await import('node:module');
-	const require = createRequire(import.meta.url);
-	const $tw = setupTiddlyWiki(require);
+	const $tw = setupTiddlyWiki();
 
 	// Reset status tiddler to "no" as core startup does
 	$tw.wiki.addTiddler({ title: '$:/status/RequireReloadDueToPluginChange', text: 'no' });
@@ -143,9 +122,7 @@ Deno.test('Plugin Reload Detection: $:/temp/info-plugin updates do NOT trigger r
 });
 
 Deno.test('Plugin Reload Detection: Themes, JS modules, and plugin deletions trigger reload warning', async () => {
-	const { createRequire } = await import('node:module');
-	const require = createRequire(import.meta.url);
-	const $tw = setupTiddlyWiki(require);
+	const $tw = setupTiddlyWiki();
 
 	// 1. Theme tiddler triggers reload
 	const themeTid = new $tw.Tiddler({
@@ -187,10 +164,8 @@ Deno.test('Plugin Reload Detection: Themes, JS modules, and plugin deletions tri
 	assertEquals($tw.wiki.getTiddlerText('$:/status/RequireReloadDueToPluginChange'), 'yes');
 });
 
-Deno.test('Plugin Upgrade Flow: same-version plugin re-import is allowed while older version is blocked', async () => {
-	const { createRequire } = await import('node:module');
-	const require = createRequire(import.meta.url);
-	const $tw = setupTiddlyWiki(require);
+Deno.test('Plugin Upgrade Flow: same-version plugin re-import is allowed while older version is blocked', () => {
+	const $tw = setupTiddlyWiki();
 
 	const existingPlugin = $tw.wiki.getTiddler('$:/plugins/mblackman/tiddlypwa');
 	const currentVersion = existingPlugin.fields.version;
@@ -221,9 +196,7 @@ Deno.test('Plugin Upgrade Flow: same-version plugin re-import is allowed while o
 });
 
 Deno.test('Plugin Upgrade Flow: unpacking before uploadAppWiki updates shadow tiddlers and ETag matches server', async () => {
-	const { createRequire } = await import('node:module');
-	const require = createRequire(import.meta.url);
-	const $tw = setupTiddlyWiki(require);
+	const $tw = setupTiddlyWiki();
 	const { SQLiteDatastore } = await import('./sqlite.ts');
 	const { TiddlyPWASyncApp } = await import('./app.ts');
 
@@ -320,10 +293,8 @@ Deno.test('Plugin Upgrade Flow: unpacking before uploadAppWiki updates shadow ti
 	assertEquals(clientEtag, syncJson.appEtag);
 });
 
-Deno.test('Plugin Deletion Flow: unregisterPluginTiddlers removes deleted plugin shadows before first render', async () => {
-	const { createRequire } = await import('node:module');
-	const require = createRequire(import.meta.url);
-	const $tw = setupTiddlyWiki(require);
+Deno.test('Plugin Deletion Flow: unregisterPluginTiddlers removes deleted plugin shadows before first render', () => {
+	const $tw = setupTiddlyWiki();
 
 	// 1. Install a plugin with a shadow tiddler and RawMarkup injection
 	const customPluginTitle = '$:/plugins/test/deleteme';
