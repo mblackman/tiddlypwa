@@ -14,17 +14,17 @@ Formatted with `deno fmt`.
 
 	// Do this early to make it work on login screen too
 	if ('serviceWorker' in navigator) {
-		navigator.serviceWorker.onmessage = (evt) => {
+		navigator.serviceWorker.addEventListener('message', (evt) => {
 			if (evt.data?.op == 'refresh') {
 				$tw.wiki.addTiddler({ title: '$:/status/TiddlyPWAUpdateAvailable', text: 'yes' });
 			} else if (evt.data?.op === 'push-click') {
 				$tw.syncadaptor?.handleServiceWorkerPushClick?.(evt.data.clickEvent);
 			}
-		};
+		});
 	}
 
 	// Patch this to make upgrading core by drag&drop reflect the version number in generated html
-	$tw.utils.extractVersionInfo = () => $tw.wiki.getTiddler('$:/core').fields.version;
+	$tw.utils.extractVersionInfo = () => $tw.wiki.getTiddler('$:/core')?.fields?.version || '';
 	Object.defineProperty($tw, 'version', { get: $tw.utils.extractVersionInfo });
 
 	// Allow re-importing/updating a plugin with the same version number during drag&drop imports,
@@ -103,9 +103,10 @@ Formatted with `deno fmt`.
 	};
 
 	const utfenc = new TextEncoder('utf-8');
-	const { b64enc, b64urlEnc, b64dec, encodeData, decodeData, decodeDataToBlob } = require(
-		'$:/plugins/mblackman/tiddlypwa/encoding.js',
-	);
+	const { b64enc, b64encSync, b64urlEnc, b64dec, encodeData, encodeBinaryBytes, decodeData, decodeDataToBytes } =
+		require(
+			'$:/plugins/mblackman/tiddlypwa/encoding.js',
+		);
 	const { BootstrapModal } = require('$:/plugins/mblackman/tiddlypwa/bootstrap.js');
 
 	function adb(req) {
@@ -141,9 +142,9 @@ Formatted with `deno fmt`.
 	}
 
 	function formatBytes(bytes) {
+		if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return '0 bytes';
 		const sizes = ['bytes', '~KiB', '~MiB', '~GiB', '~TiB'];
-		const i = parseInt(Math.floor(Math.log(bytes) / Math.log(1024)));
-		if (i >= sizes.length) return 'too much';
+		const i = Math.min(sizes.length - 1, Math.max(0, Math.floor(Math.log(bytes) / Math.log(1024))));
 		return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + sizes[i];
 	}
 
@@ -224,19 +225,42 @@ Formatted with `deno fmt`.
 			this.deletedQueue = new Set();
 			this.ackedPatchIds = new Set();
 			this.appliedPatchIds = new Set();
+			this.blobRegistry = new Map();
+			this.titleBlobUrls = new Map();
+			this.savedBlobSha = new Map();
+			this.titleToHashB64 = new Map();
+			this.hashB64ToTitle = new Map();
+			this.titleToHashBuf = new Map();
+			this.storageInfoTimer = null;
+			this.lastSyncError = '';
+			this.lastServerCount = 0;
+			this.lastUnsyncedCount = 0;
 			this.syncedRuleSchedules = new Map();
 			this.ruleSchedulesLoaded = false;
 			this.syncedWatchers = new Map();
 			this.watchersLoaded = false;
 			this.changesChannel = new BroadcastChannel(`tiddlypwa-changes:${location.pathname}`);
-			this.changesChannel.onmessage = (evt) => {
+			this.changesChannel.onmessage = async (evt) => {
 				this.logger.log('Change from another tab');
 				if (evt.data.del) {
 					this.deletedQueue.add(evt.data.title);
 				} else {
-					this.modifiedQueue.add(evt.data.title);
+					const changedTitle = evt.data.title;
+					const draftTitle = this.wiki.findDraft?.(changedTitle) || `Draft of '${changedTitle}'`;
+					if (changedTitle && this.wiki.tiddlerExists(draftTitle) && this.db && this.mackey && this.enckeys) {
+						try {
+							const remoteTid = await this._loadTiddler(changedTitle);
+							if (remoteTid) {
+								this.checkDraftCollision(changedTitle, remoteTid, new Date());
+							}
+						} catch (e) {
+							console.warn('Could not check cross-tab draft collision:', e);
+						}
+					}
+					this.modifiedQueue.add(changedTitle);
 				}
 				$tw.syncer.syncFromServer(); // "server" being our local DB
+				this.backgroundSync();
 				clearTimeout(this.tabChangesReflTimer);
 				this.tabChangesReflTimer = setTimeout(() => {
 					this.reflectSyncServers();
@@ -249,9 +273,18 @@ Formatted with `deno fmt`.
 			};
 			this.sessionChannel = new BroadcastChannel(`tiddlypwa-session:${location.pathname}`);
 			this.sessionChannel.onmessage = (evt) => {
-				this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: evt.data ? 'yes' : 'no' });
-				if (!evt.data) {
-					this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'no' });
+				const payload = typeof evt.data === 'object' && evt.data !== null
+					? evt.data
+					: { remembered: Boolean(evt.data), biometric: false };
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWARemembered',
+					text: payload.remembered ? 'yes' : 'no',
+				});
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWABiometricConfigured',
+					text: payload.biometric ? 'yes' : 'no',
+				});
+				if (!payload.biometric) {
 					this.biometricSession = null;
 				}
 			};
@@ -266,6 +299,8 @@ Formatted with `deno fmt`.
 				if (this.isReady()) {
 					const hasRelevantChange = Object.keys(changes).some((title) =>
 						title !== '$:/StoryList' &&
+						title !== '$:/HistoryList' &&
+						!title.startsWith('$:/state/') &&
 						!title.startsWith('$:/status/') &&
 						!title.startsWith('$:/temp/') &&
 						!title.startsWith("Draft of '")
@@ -282,12 +317,16 @@ Formatted with `deno fmt`.
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOnline', text: navigator.onLine ? 'yes' : 'no' });
 			globalThis.addEventListener(
 				'offline',
-				(_evt) => this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOnline', text: 'no' }),
+				(_evt) => {
+					this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOnline', text: 'no' });
+					this.updateSyncUiStatus();
+				},
 			);
 			globalThis.addEventListener(
 				'online',
 				(_evt) => {
 					this.wiki.addTiddler({ title: '$:/status/TiddlyPWAOnline', text: 'yes' });
+					this.updateSyncUiStatus();
 					if (this.db) {
 						clearTimeout(this.wakeTimer);
 						this.wakeTimer = setTimeout(() => {
@@ -298,6 +337,19 @@ Formatted with `deno fmt`.
 				},
 			);
 
+			const flushPendingSync = () => {
+				if (!this.isReady() || !navigator.onLine) return;
+				try {
+					$tw.syncer?.processTaskQueue?.();
+				} catch (_e) { /* ignore syncer flush error during teardown */ }
+				clearTimeout(this.ruleSyncTimer);
+				this.syncNotificationRules().catch(() => {});
+				if (this.syncTimer || ($tw.syncer && Object.keys($tw.syncer.taskQueue || {}).length > 0)) {
+					clearTimeout(this.syncTimer);
+					this.syncTimer = null;
+					this.sync(false);
+				}
+			};
 			document.addEventListener('visibilitychange', (_evt) => {
 				if (document.visibilityState === 'visible') {
 					clearTimeout(this.visibilityTimer);
@@ -307,16 +359,11 @@ Formatted with `deno fmt`.
 							this.startRealtimeMonitor();
 						}
 					}, 1000);
-				} else if (document.visibilityState === 'hidden' && this.isReady() && navigator.onLine) {
-					clearTimeout(this.ruleSyncTimer);
-					this.syncNotificationRules().catch(() => {});
-					if (this.syncTimer) {
-						clearTimeout(this.syncTimer);
-						this.syncTimer = null;
-						this.sync(false);
-					}
+				} else if (document.visibilityState === 'hidden') {
+					flushPendingSync();
 				}
 			});
+			globalThis.addEventListener('pagehide', flushPendingSync);
 
 			$tw.rootWidget.addEventListener('tiddlypwa-remember', (_evt) => {
 				if (!confirm('Are you sure you want to remember the password?')) {
@@ -336,7 +383,7 @@ Formatted with `deno fmt`.
 						this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'no' });
 						this.biometricSession = null;
 						$tw.notifier.display('$:/plugins/mblackman/tiddlypwa/notif-remembered');
-						this.sessionChannel.postMessage(true);
+						this.sessionChannel.postMessage({ remembered: true, biometric: false });
 					};
 			});
 
@@ -351,16 +398,22 @@ Formatted with `deno fmt`.
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: 'no' });
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'no' });
 				this.biometricSession = null;
-				this.sessionChannel.postMessage(false);
+				this.sessionChannel.postMessage({ remembered: false, biometric: false });
 			});
 
 			$tw.rootWidget.addEventListener('tiddlypwa-enable-biometrics', async (_evt) => {
 				if (!this.basebits) {
-					alert('Please log in with your master password first before enabling biometrics.');
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWABiometricNotice',
+						text: 'Please log in with your master password (without Remember Password) before enabling biometrics.',
+					});
 					return;
 				}
 				if (!window.PublicKeyCredential || !window.isSecureContext) {
-					alert('WebAuthn biometrics is not supported in this browser or context (HTTPS is required).');
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWABiometricNotice',
+						text: 'WebAuthn biometrics is not supported in this browser or context (HTTPS is required).',
+					});
 					return;
 				}
 				try {
@@ -395,7 +448,10 @@ Formatted with `deno fmt`.
 					const extResults = credential?.getClientExtensionResults ? credential.getClientExtensionResults() : null;
 					const prfOutput = extResults?.prf?.results?.first;
 					if (!prfOutput) {
-						alert('Your device or authenticator does not support the WebAuthn PRF extension for hardware encryption.');
+						this.wiki.addTiddler({
+							title: '$:/status/TiddlyPWABiometricNotice',
+							text: 'Your device or authenticator does not support the WebAuthn PRF extension for hardware encryption.',
+						});
 						return;
 					}
 					const prfBaseKey = await crypto.subtle.importKey('raw', prfOutput, 'HKDF', false, ['deriveKey']);
@@ -431,13 +487,17 @@ Formatted with `deno fmt`.
 					this.biometricSession = sessionRecord;
 					this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'yes' });
 					this.wiki.addTiddler({ title: '$:/status/TiddlyPWARemembered', text: 'no' });
-					this.sessionChannel.postMessage(true);
-					alert(
-						'Biometric Unlock is now enabled on this device! You can unlock using Touch ID, Face ID, or Windows Hello.',
-					);
+					this.sessionChannel.postMessage({ remembered: false, biometric: true });
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWABiometricNotice',
+						text: 'Biometric Unlock is now enabled on this device.',
+					});
 				} catch (e) {
 					console.error('Failed to enable biometrics:', e);
-					alert('Failed to enable biometrics: ' + (e.message || e));
+					this.wiki.addTiddler({
+						title: '$:/status/TiddlyPWABiometricNotice',
+						text: 'Failed to enable biometrics: ' + (e.message || e),
+					});
 				}
 			});
 
@@ -446,8 +506,11 @@ Formatted with `deno fmt`.
 				sessionStore.clear();
 				this.biometricSession = null;
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWABiometricConfigured', text: 'no' });
-				this.sessionChannel.postMessage(false);
-				alert('Biometric Unlock has been disabled.');
+				this.sessionChannel.postMessage({ remembered: false, biometric: false });
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWABiometricNotice',
+					text: 'Biometric Unlock has been disabled.',
+				});
 			});
 
 			$tw.rootWidget.addEventListener('tiddlypwa-refresh-pair-url', async (_evt) => {
@@ -466,13 +529,13 @@ Formatted with `deno fmt`.
 				const url = evt?.paramObject?.url;
 				const token = evt?.paramObject?.token;
 				if (!url || !token) {
-					alert('A sync server must have a URL and a token!');
+					this.logger.alert('A sync server must have a URL and a token!');
 					return;
 				}
 				try {
 					new URL(url, document.location);
 				} catch (_e) {
-					alert('The URL must be valid!');
+					this.logger.alert('The URL must be valid!');
 					return;
 				}
 				adb(
@@ -574,6 +637,18 @@ Formatted with `deno fmt`.
 					console.warn('Failed to refresh watchers:', e)
 				);
 			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-resolve-conflict', (evt) => {
+				this.resolveConflict(evt?.paramObject || {});
+			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-open-conflicts', (_evt) => {
+				this.openConflictsView();
+			});
+
+			$tw.rootWidget.addEventListener('tiddlypwa-export-single-file', (evt) => {
+				this.exportSingleFile(evt?.paramObject || {});
+			});
 		}
 
 		firstChange() {
@@ -626,6 +701,11 @@ Formatted with `deno fmt`.
 		getPushDbName() {
 			const scopeUrl = new URL('.', location.href);
 			return `tiddlypwa-push:${scopeUrl.pathname}`;
+		}
+
+		getScopedCacheName() {
+			const scopeUrl = new URL('.', location.href);
+			return `tiddlypwa:v2:${scopeUrl.pathname}`;
 		}
 
 		openPushDb() {
@@ -1438,7 +1518,7 @@ Formatted with `deno fmt`.
 				const allowedHosts = String(wTiddler.fields['allowed-hosts'] || '').trim();
 				const scheduleCron = String(wTiddler.fields['schedule-cron'] || '0 * * * *').trim();
 				const timezone = String(wTiddler.fields.timezone || browserTimezone).trim() || 'UTC';
-				const targetFilter = String(wTiddler.fields['target-filter'] || '').trim();
+				const targetFilter = String(wTiddler.fields['target-filter'] || wTiddler.fields['config-filter'] || '').trim();
 				const rawWatchedFields = $tw.utils.parseStringArray(wTiddler.fields['watched-fields'] || 'title') || ['title'];
 				const sortedFieldNames = [...new Set(rawWatchedFields.length > 0 ? rawWatchedFields : ['title'])].sort();
 
@@ -1503,10 +1583,7 @@ Formatted with `deno fmt`.
 				}
 			}
 
-			if (watchersToUpload.length === 0 && removedWatcherIds.length === 0) {
-				await this.refreshServerWatchers();
-				return;
-			}
+			if (watchersToUpload.length === 0 && removedWatcherIds.length === 0) return;
 
 			let allSucceeded = true;
 			for (const server of servers) {
@@ -1630,8 +1707,8 @@ Formatted with `deno fmt`.
 		}
 
 		applySingleWatcherPatchSpec(spec) {
-			if (!spec || typeof spec !== 'object') return false;
-			let modifiedAny = false;
+			const savedTiddlers = [];
+			if (!spec || typeof spec !== 'object') return savedTiddlers;
 			if (spec.patchTarget && typeof spec.patchTarget === 'object') {
 				const targetTitle = spec.patchTarget.title;
 				if (typeof targetTitle === 'string' && targetTitle.length > 0) {
@@ -1643,8 +1720,9 @@ Formatted with `deno fmt`.
 						title: targetTitle,
 						modified: new Date(),
 					};
-					this.wiki.addTiddler(new $tw.Tiddler(nextFields));
-					modifiedAny = true;
+					const tid = new $tw.Tiddler(nextFields);
+					this.wiki.addTiddler(tid);
+					savedTiddlers.push(tid);
 				}
 			}
 			if (spec.createTiddler && typeof spec.createTiddler === 'object') {
@@ -1661,14 +1739,24 @@ Formatted with `deno fmt`.
 						modified: new Date(),
 					};
 					delete nextFields.fields;
-					this.wiki.addTiddler(new $tw.Tiddler(nextFields));
-					modifiedAny = true;
+					const tid = new $tw.Tiddler(nextFields);
+					this.wiki.addTiddler(tid);
+					savedTiddlers.push(tid);
 				}
 			}
-			return modifiedAny;
+			return savedTiddlers;
 		}
 
-		applyPendingWatcherPatches(pendingPatches) {
+		recordAppliedPatchId(patchId) {
+			if (this.appliedPatchIds.has(patchId)) return;
+			this.appliedPatchIds.add(patchId);
+			if (this.appliedPatchIds.size > 1000) {
+				const oldest = this.appliedPatchIds.values().next().value;
+				if (oldest !== undefined) this.appliedPatchIds.delete(oldest);
+			}
+		}
+
+		async applyPendingWatcherPatches(pendingPatches) {
 			if (!Array.isArray(pendingPatches) || pendingPatches.length === 0) return;
 			for (const entry of pendingPatches) {
 				if (!entry || typeof entry.patchId !== 'string') continue;
@@ -1676,15 +1764,24 @@ Formatted with `deno fmt`.
 					this.ackedPatchIds.add(entry.patchId);
 					continue;
 				}
-				this.appliedPatchIds.add(entry.patchId);
-				this.ackedPatchIds.add(entry.patchId);
-				if (entry.patch && typeof entry.patch === 'object') {
-					this.applySingleWatcherPatchSpec(entry.patch);
-					try {
-						$tw.hooks.invokeHook('th-pwa-watcher-action', entry);
-					} catch (e) {
-						console.error('Error in th-pwa-watcher-action hook:', e);
+				try {
+					if (entry.patch && typeof entry.patch === 'object') {
+						const savedTiddlers = this.applySingleWatcherPatchSpec(entry.patch);
+						for (const tid of savedTiddlers) {
+							await this._saveTiddler(tid);
+						}
 					}
+					this.recordAppliedPatchId(entry.patchId);
+					this.ackedPatchIds.add(entry.patchId);
+					if (entry.patch && typeof entry.patch === 'object') {
+						try {
+							$tw.hooks.invokeHook('th-pwa-watcher-action', entry);
+						} catch (e) {
+							console.error('Error in th-pwa-watcher-action hook:', e);
+						}
+					}
+				} catch (e) {
+					console.error('Failed to persist pending watcher patch:', entry.patchId, e);
 				}
 			}
 		}
@@ -1797,7 +1894,16 @@ Formatted with `deno fmt`.
 				text: `connecting to ${bareUrl}`,
 			});
 			url.searchParams.set('op', 'monitor');
-			url.searchParams.set('token', server.token);
+			const authcode = this.mackey ? await b64enc(await this.titlehash(server.token)).catch(() => null) : null;
+			const hasSyncedBefore = server.lastSync && new Date(server.lastSync).getTime() > 0;
+			if (hasSyncedBefore && authcode) {
+				url.searchParams.set('halftoken', server.token.slice(0, Math.floor(server.token.length / 2)));
+				url.searchParams.set('authcode', authcode);
+				this.monitorUsingHalftoken = true;
+			} else {
+				url.searchParams.set('token', server.token);
+				this.monitorUsingHalftoken = false;
+			}
 			url.searchParams.set('browserToken', this.browserToken);
 			this.monitorStream = new EventSource(url.href);
 			this.monitorStream.onopen = (_e) => {
@@ -1835,6 +1941,113 @@ Formatted with `deno fmt`.
 					(_lck) => this._startRealtimeMonitor(),
 				);
 			}, this.monitorTimeout);
+		}
+
+		getServerSyncKey(server) {
+			return `${server?.url || ''}|${server?.token || ''}`;
+		}
+
+		getBaseMtimeForServer(tid, serverKey) {
+			const state = tid?.serverSyncState;
+			if (state && typeof state === 'object') {
+				if (Object.hasOwn(state, serverKey)) {
+					return state[serverKey]?.baseMtime ?? null;
+				}
+				if (Object.keys(state).length > 0) {
+					return null;
+				}
+			}
+			return tid?.baseMtime ?? null;
+		}
+
+		isTiddlerDirtyForServer(tid, serverKey) {
+			const mtimeMs = tid?.mtime instanceof Date ? tid.mtime.getTime() : 0;
+			const state = tid?.serverSyncState;
+			if (state && typeof state === 'object') {
+				if (Object.hasOwn(state, serverKey)) {
+					const entry = state[serverKey];
+					return entry?.syncedLocalMtime == null || mtimeMs !== entry.syncedLocalMtime;
+				}
+				if (Object.keys(state).length > 0) {
+					return true;
+				}
+			}
+			return tid?.baseMtime === null ||
+				(tid?.baseMtime instanceof Date && mtimeMs !== tid.baseMtime.getTime());
+		}
+
+		maxServerBaseMtimeMs(tid) {
+			let maxMs = 0;
+			if (tid?.baseMtime instanceof Date) {
+				maxMs = tid.baseMtime.getTime();
+			}
+			const state = tid?.serverSyncState;
+			if (state && typeof state === 'object') {
+				for (const entry of Object.values(state)) {
+					const bm = entry?.baseMtime;
+					const ms = bm instanceof Date ? bm.getTime() : (bm ? new Date(bm).getTime() : 0);
+					if (Number.isFinite(ms) && ms > maxMs) maxMs = ms;
+				}
+			}
+			return maxMs;
+		}
+
+		updateSyncUiStatus({ syncing, error, serverCount, unsyncedCount } = {}) {
+			if (serverCount !== undefined) this.lastServerCount = Number(serverCount) || 0;
+			if (unsyncedCount !== undefined) this.lastUnsyncedCount = Number(unsyncedCount) || 0;
+			if (error !== undefined) this.lastSyncError = error ? String(error) : '';
+
+			const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+			const isSyncingNow = syncing !== undefined ? Boolean(syncing) : Boolean(this.isSyncing);
+			let state = 'synced';
+			if (isSyncingNow) {
+				state = 'syncing';
+			} else if (this.lastServerCount <= 0) {
+				state = 'local-only';
+			} else if (!isOnline) {
+				state = 'offline';
+			} else if (this.lastSyncError) {
+				state = 'error';
+			} else if (this.lastUnsyncedCount > 0) {
+				state = 'dirty';
+			}
+
+			this.wiki.addTiddler({ title: '$:/status/TiddlyPWASyncState', text: state });
+			this.wiki.addTiddler({ title: '$:/status/TiddlyPWALastSyncError', text: this.lastSyncError });
+			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAUnsyncedCount', text: String(this.lastUnsyncedCount) });
+
+			if (typeof document !== 'undefined' && document.body) {
+				for (const cls of ['local-only', 'offline', 'syncing', 'dirty', 'error', 'synced']) {
+					$tw.utils.removeClass(document.body, `tiddlypwa-sync-state-${cls}`);
+				}
+				$tw.utils.addClass(document.body, `tiddlypwa-sync-state-${state}`);
+			}
+			return state;
+		}
+
+		async refreshUnsyncedCount(overrides = {}) {
+			if (!this.db) {
+				return this.updateSyncUiStatus({ ...overrides, serverCount: 0, unsyncedCount: 0 });
+			}
+			const [servers, tiddlers] = await Promise.all([
+				adb(this.db.transaction('syncservers').objectStore('syncservers').getAll()).catch(() => []),
+				adb(this.db.transaction('tiddlers').objectStore('tiddlers').getAll()).catch(() => []),
+			]);
+			const serverKeys = servers.map((s) => this.getServerSyncKey(s));
+			let unsyncedCount = 0;
+			if (serverKeys.length > 0) {
+				for (const tid of tiddlers) {
+					if (this.storyListHash && arrayEq(tid.thash, this.storyListHash)) continue;
+					if (serverKeys.some((sk) => this.isTiddlerDirtyForServer(tid, sk))) {
+						unsyncedCount++;
+					}
+				}
+			}
+			return this.updateSyncUiStatus({
+				...overrides,
+				serverCount: serverKeys.length,
+				unsyncedCount,
+			});
 		}
 
 		async reflectSyncServers() {
@@ -1877,9 +2090,24 @@ Formatted with `deno fmt`.
 				}
 			);
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWAServerCount', text: cnt.toString() });
+			await this.refreshUnsyncedCount({ serverCount: cnt });
+			await this.updatePairUrl();
 		}
 
-		async reflectStorageInfo() {
+		reflectStorageInfo(immediate = false) {
+			clearTimeout(this.storageInfoTimer);
+			if (immediate) {
+				this.storageInfoTimer = null;
+				return this._reflectStorageInfoNow();
+			}
+			this.storageInfoTimer = setTimeout(() => {
+				this.storageInfoTimer = null;
+				this._reflectStorageInfoNow().catch(() => {});
+			}, 2000);
+			return Promise.resolve();
+		}
+
+		async _reflectStorageInfoNow() {
 			this.wiki.addTiddler({
 				title: '$:/status/TiddlyPWAStoragePersisted',
 				text: (navigator.storage?.persist) ? (await navigator.storage.persisted() ? 'yes' : 'no') : 'unavail',
@@ -1929,31 +2157,245 @@ Formatted with `deno fmt`.
 			return this.ready;
 		}
 
+		isBinaryContentType(type) {
+			return Boolean(type && $tw.config?.contentTypeInfo?.[type]?.encoding === 'base64');
+		}
+
+		revokeBlobUrlIfUnreferenced(blobUrl) {
+			if (!blobUrl || !blobUrl.startsWith('blob:')) return;
+			for (const activeUrl of this.titleBlobUrls.values()) {
+				if (activeUrl === blobUrl) return;
+			}
+			this.blobRegistry.delete(blobUrl);
+			try {
+				URL.revokeObjectURL(blobUrl);
+			} catch (_e) {
+				// Ignore revoke failures in restricted environments
+			}
+		}
+
+		bindBlobTitle(title, blobUrl) {
+			if (!title || !blobUrl || !blobUrl.startsWith('blob:')) return;
+			const prevUrl = this.titleBlobUrls.get(title);
+			this.titleBlobUrls.set(title, blobUrl);
+			if (prevUrl && prevUrl !== blobUrl) {
+				this.revokeBlobUrlIfUnreferenced(prevUrl);
+			}
+		}
+
+		releaseBlobForTitle(title) {
+			if (!title) return;
+			const prevUrl = this.titleBlobUrls.get(title);
+			if (prevUrl) {
+				this.titleBlobUrls.delete(title);
+				this.revokeBlobUrlIfUnreferenced(prevUrl);
+			}
+		}
+
+		revokeTempBlob(tid) {
+			const uri = tid?._canonical_uri || tid?.fields?._canonical_uri;
+			if (uri && typeof uri === 'string' && uri.startsWith('blob:')) {
+				this.revokeBlobUrlIfUnreferenced(uri);
+			}
+		}
+
+		async registerBinaryBlob(title, decryptedBuf, mimeType) {
+			const rawBytes = await decodeDataToBytes(decryptedBuf);
+			const sha256B64 = await b64enc(await crypto.subtle.digest('SHA-256', rawBytes));
+			const effectiveMime = mimeType || 'application/octet-stream';
+			if (title) {
+				const prevUrl = this.titleBlobUrls.get(title);
+				const prevEntry = prevUrl ? this.blobRegistry.get(prevUrl) : null;
+				if (prevEntry && prevEntry.sha256B64 === sha256B64 && prevEntry.mimeType === effectiveMime) {
+					return prevUrl;
+				}
+			}
+			const blobUrl = URL.createObjectURL(new Blob([rawBytes], { type: effectiveMime }));
+			this.blobRegistry.set(blobUrl, { rawBytes, mimeType: effectiveMime, sha256B64 });
+			if (title) {
+				this.bindBlobTitle(title, blobUrl);
+			}
+			return blobUrl;
+		}
+
+		updateConflictCount() {
+			this.wiki.addTiddler({
+				title: '$:/status/TiddlyPWAConflictsCount',
+				text: String(this.wiki.filterTiddlers('[tag[$:/tags/TiddlyPWA/Conflict]]').length),
+			});
+		}
+
+		openConflictsView() {
+			this.wiki.addTiddler({ title: '$:/state/tab-1749438307', text: '$:/plugins/mblackman/tiddlypwa/config' });
+			this.wiki.addTiddler({
+				title: '$:/state/tab--84302341',
+				text: '$:/plugins/mblackman/tiddlypwa/config-conflicts',
+			});
+			try {
+				const story = new $tw.Story({ wiki: this.wiki });
+				if (this.wiki.tiddlerExists('$:/ControlPanel') || this.wiki.isShadowTiddler('$:/ControlPanel')) {
+					story.navigateTiddler('$:/ControlPanel');
+				} else {
+					story.navigateTiddler('$:/plugins/mblackman/tiddlypwa/config-conflicts');
+				}
+			} catch (_e) {
+				this.wiki.addTiddler({
+					title: '$:/StoryList',
+					text: '',
+					list: ['$:/ControlPanel'],
+				});
+			}
+		}
+
+		resolveConflict({ conflictTitle, action } = {}) {
+			if (!conflictTitle) return;
+			const conflictTid = this.wiki.getTiddler(conflictTitle);
+			if (!conflictTid) {
+				this.updateConflictCount();
+				return;
+			}
+			if (action === 'keep-conflict') {
+				const origTitle = conflictTid.fields['tiddlypwa-conflict-of'];
+				if (origTitle) {
+					const nextFields = Object.create(null);
+					for (const [k, v] of Object.entries(conflictTid.fields)) {
+						if (
+							k === 'title' ||
+							k === 'tiddlypwa-conflict-of' ||
+							k === 'tiddlypwa-conflict-source' ||
+							k === 'tiddlypwa-conflict-date'
+						) {
+							continue;
+						}
+						nextFields[k] = v;
+					}
+					const cleanTags = $tw.utils.parseStringArray(conflictTid.fields.tags || '').filter(
+						(t) => t !== '$:/tags/TiddlyPWA/Conflict',
+					);
+					if (cleanTags.length > 0) {
+						nextFields.tags = cleanTags;
+					} else {
+						delete nextFields.tags;
+					}
+					nextFields.title = origTitle;
+					nextFields.modified = new Date();
+					if (typeof nextFields._canonical_uri === 'string' && nextFields._canonical_uri.startsWith('blob:')) {
+						this.bindBlobTitle(origTitle, nextFields._canonical_uri);
+					} else {
+						this.releaseBlobForTitle(origTitle);
+					}
+					this.wiki.addTiddler(new $tw.Tiddler(nextFields));
+					const draftTitle = this.wiki.findDraft?.(origTitle) || `Draft of '${origTitle}'`;
+					if (this.wiki.tiddlerExists(draftTitle)) {
+						this.wiki.deleteTiddler(draftTitle);
+					}
+				}
+			}
+			this.wiki.deleteTiddler(conflictTitle);
+			this.releaseBlobForTitle(conflictTitle);
+			this.updateConflictCount();
+		}
+
+		checkDraftCollision(title, fullTid, mtime) {
+			if (!title || !fullTid) return false;
+			const draftTitle = this.wiki.findDraft?.(title) || `Draft of '${title}'`;
+			if (!this.wiki.tiddlerExists(draftTitle)) return false;
+			const baseTid = this.wiki.getTiddler(title);
+			const baseIsFull = baseTid && !baseTid.fields._is_skinny;
+			const changedVsBase = !baseIsFull || !this.tiddlersAreEqual(baseTid.fields, fullTid);
+			const draftTid = this.wiki.getTiddler(draftTitle);
+			const draftFields = draftTid?.fields || {};
+			const changedVsDraft = !this.tiddlersAreEqual(draftFields, fullTid, { checkDraftTitle: true });
+			if (changedVsBase && changedVsDraft) {
+				const conflictTid = this.createConflictTiddler(fullTid, title, 'remote', mtime || new Date());
+				if (
+					typeof conflictTid.fields._canonical_uri === 'string' && conflictTid.fields._canonical_uri.startsWith('blob:')
+				) {
+					this.bindBlobTitle(conflictTid.fields.title, conflictTid.fields._canonical_uri);
+				}
+				this.wiki.addTiddler(conflictTid);
+				this.updateConflictCount();
+				this.wiki.deleteTiddler('$:/temp/HideConflictBanner');
+				this.logger.log(
+					`Notice: "${title}" was updated on another device while you have a draft open! A remote conflict copy "${conflictTid.fields.title}" has been preserved.`,
+				);
+				return true;
+			}
+			return false;
+		}
+
+		hydrateWikiBlobsTemporarily(fn) {
+			const origGetTiddler = this.wiki.getTiddler;
+			const hydrated = new Map();
+			for (const title of this.wiki.allTitles()) {
+				const tid = origGetTiddler.call(this.wiki, title);
+				const uri = tid?.fields?._canonical_uri;
+				if (typeof uri === 'string' && uri.startsWith('blob:') && this.blobRegistry.has(uri)) {
+					const entry = this.blobRegistry.get(uri);
+					const nextFields = { ...tid.fields, text: b64encSync(entry.rawBytes) };
+					delete nextFields._canonical_uri;
+					hydrated.set(title, new $tw.Tiddler(nextFields));
+				}
+			}
+			this.wiki.getTiddler = function (title) {
+				return hydrated.get(title) || origGetTiddler.call(this, title);
+			};
+			try {
+				return fn();
+			} finally {
+				this.wiki.getTiddler = origGetTiddler;
+			}
+		}
+
+		exportSingleFile(variables = {}) {
+			if (!$tw.saverHandler?.saveWiki) return;
+			this.hydrateWikiBlobsTemporarily(() => {
+				$tw.saverHandler.saveWiki({
+					wiki: this.wiki,
+					method: 'download',
+					downloadType: 'text/plain',
+					variables,
+				});
+			});
+		}
+
+		ensureSaverHydrationWrapper() {
+			if (this.wrappedSaverHandler || !$tw.saverHandler?.saveWiki) return;
+			this.wrappedSaverHandler = true;
+			const origSaveWiki = $tw.saverHandler.saveWiki.bind($tw.saverHandler);
+			const self = this;
+			$tw.saverHandler.saveWiki = function (options = {}) {
+				if (options.method === 'download') {
+					return self.hydrateWikiBlobsTemporarily(() => origSaveWiki(options));
+				}
+				return origSaveWiki(options);
+			};
+		}
+
 		async parseEncryptedTiddler({ thash, iv, ct }) {
 			return JSON.parse(
 				await decodeData(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, this.enckey(thash), ct)),
 			);
 		}
 
-		async decryptRawTiddler(record) {
+		async decryptRawTiddler(record, { registerForTitle = false } = {}) {
 			if (!record || record.deleted || !record.ct || !record.iv) return null;
 			try {
 				const tid = await this.parseEncryptedTiddler(record);
 				if (record.sbiv && record.sbct) {
-					const isBin = $tw.config.contentTypeInfo[tid.type]
-						? $tw.config.contentTypeInfo[tid.type].encoding === 'base64'
-						: false;
-
-					if (isBin) {
-						const blob = await decodeDataToBlob(
-							await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.sbiv }, this.enckey(record.thash), record.sbct),
+					const decryptedBuf = await crypto.subtle.decrypt(
+						{ name: 'AES-GCM', iv: record.sbiv },
+						this.enckey(record.thash),
+						record.sbct,
+					);
+					if (this.isBinaryContentType(tid.type)) {
+						tid._canonical_uri = await this.registerBinaryBlob(
+							registerForTitle ? tid.title : null,
+							decryptedBuf,
 							tid.type,
 						);
-						tid._canonical_uri = URL.createObjectURL(blob);
 					} else {
-						tid.text = await decodeData(
-							await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.sbiv }, this.enckey(record.thash), record.sbct),
-						);
+						tid.text = await decodeData(decryptedBuf);
 					}
 				}
 				return tid;
@@ -1963,14 +2405,45 @@ Formatted with `deno fmt`.
 			}
 		}
 
-		tiddlersAreEqual(a, b) {
+		tiddlersAreEqual(a, b, { checkDraftTitle = false } = {}) {
 			if (!a || !b) return false;
+			if (checkDraftTitle && a['draft.title'] && b.title && a['draft.title'] !== b.title) {
+				return false;
+			}
+			const uriA = a._canonical_uri;
+			const uriB = b._canonical_uri;
+			const bothBlobs = typeof uriA === 'string' && uriA.startsWith('blob:') &&
+				typeof uriB === 'string' && uriB.startsWith('blob:');
+			if (bothBlobs) {
+				const entryA = this.blobRegistry.get(uriA);
+				const entryB = this.blobRegistry.get(uriB);
+				if (entryA && entryB) {
+					if (entryA.sha256B64 !== entryB.sha256B64) return false;
+				} else if (uriA !== uriB) {
+					return false;
+				}
+			}
 			if ((a.text || '') !== (b.text || '')) return false;
-			const ignored = new Set(['modified', 'created', 'revision', 'revision-tag', 'text']);
-			const keysA = Object.keys(a).filter((k) => !ignored.has(k));
-			const keysB = Object.keys(b).filter((k) => !ignored.has(k));
+			const ignored = new Set([
+				'modified',
+				'created',
+				'revision',
+				'revision-tag',
+				'text',
+				'title',
+				'draft.of',
+				'draft.title',
+			]);
+			if (bothBlobs) ignored.add('_canonical_uri');
+			const normVal = (k, v) => {
+				if (k === 'tags') return Array.isArray(v) ? $tw.utils.stringifyList(v) : String(v ?? '');
+				if (v instanceof Date) return v.toISOString();
+				return String(v ?? '');
+			};
+			const keysA = Object.keys(a).filter((k) => !ignored.has(k) && a[k] !== undefined && a[k] !== '');
+			const keysB = Object.keys(b).filter((k) => !ignored.has(k) && b[k] !== undefined && b[k] !== '');
 			if (keysA.length !== keysB.length) return false;
-			return keysA.every((k) => a[k] === b[k]);
+			return keysA.every((k) => normVal(k, a[k]) === normVal(k, b[k]));
 		}
 
 		formatConflictTitle(baseTitle, date) {
@@ -2019,10 +2492,23 @@ Formatted with `deno fmt`.
 				}
 				if (sbiv && sbct) {
 					if (mustEagerLoad(tid)) {
-						tid.text = await decodeData(
-							await crypto.subtle.decrypt({ name: 'AES-GCM', iv: sbiv }, this.enckey(thash), sbct),
+						const decryptedBuf = await crypto.subtle.decrypt(
+							{ name: 'AES-GCM', iv: sbiv },
+							this.enckey(thash),
+							sbct,
 						);
+						if (this.isBinaryContentType(tid.type)) {
+							const blobUrl = await this.registerBinaryBlob(tid.title, decryptedBuf, tid.type);
+							tid._canonical_uri = blobUrl;
+							const entry = this.blobRegistry.get(blobUrl);
+							if (entry) this.savedBlobSha.set(await b64enc(thash), entry.sha256B64);
+						} else {
+							tid.text = await decodeData(decryptedBuf);
+						}
 					} else tid._is_skinny = true; // Lazy-load separate body
+				}
+				if (tid?.title) {
+					this.registerTitleHash(tid.title, thash, await b64enc(thash));
 				}
 				return tid;
 			};
@@ -2061,6 +2547,15 @@ Formatted with `deno fmt`.
 			// Adds are batched all together SYNCHRONOUSLY to prevent event handlers from running on every add!
 			// storeTiddler is basically addTiddler but store info to prevent syncer from creating save tasks later
 			for (const tid of toAdd) $tw.syncer.storeTiddler(tid);
+			const deletedRecords = toDecrypt.filter((r) => r.deleted);
+			if (deletedRecords.length > 0 && this.tiddlersInFile.size > 0) {
+				const deletedHashes = new Set(await Promise.all(deletedRecords.map((r) => b64enc(r.thash))));
+				for (const fileTitle of this.tiddlersInFile) {
+					if (deletedHashes.has(await b64enc(await this.titlehash(fileTitle)))) {
+						this.wiki.deleteTiddler(fileTitle);
+					}
+				}
+			}
 			this.wiki.addTiddler({
 				title: '$:/status/TiddlyPWAConflictsCount',
 				text: String(this.wiki.filterTiddlers('[tag[$:/tags/TiddlyPWA/Conflict]]').length),
@@ -2092,11 +2587,15 @@ Formatted with `deno fmt`.
 		}
 
 		openStartupStory() {
-			// XXX: TW core should export openStartupTiddlers
-			const aEL = $tw.rootWidget.addEventListener;
-			$tw.rootWidget.addEventListener = () => {};
-			require('$:/core/modules/startup/story.js').startup();
-			$tw.rootWidget.addEventListener = aEL;
+			const defaultTiddlersFilter = this.wiki.getTiddlerText('$:/DefaultTiddlers', '');
+			const list = defaultTiddlersFilter ? this.wiki.filterTiddlers(defaultTiddlersFilter) : [];
+			if (list.length > 0) {
+				this.wiki.addTiddler({
+					title: '$:/StoryList',
+					text: '',
+					list,
+				});
+			}
 		}
 
 		initDb(db) {
@@ -2119,6 +2618,7 @@ Formatted with `deno fmt`.
 			Promise.all([
 				adb(indexedDB.deleteDatabase(`tiddlypwa:${location.pathname}`)),
 				adb(indexedDB.deleteDatabase(this.getPushDbName())).catch(() => {}),
+				typeof caches !== 'undefined' ? caches.delete(this.getScopedCacheName()).catch(() => {}) : Promise.resolve(),
 			]).then((_) => location.reload())
 				.catch((e) => this.logger.alert('Failed to delete database!', e));
 		}
@@ -2279,6 +2779,32 @@ Formatted with `deno fmt`.
 			this.wiki.addTiddler({ title: '$:/temp/TiddlyPWAPairUrl', text: pairUrl });
 		}
 
+		async verifyAuthWithServer(url, token) {
+			if (!url || !token || !this.mackey) return { ok: true };
+			try {
+				const authcode = await b64enc(await this.titlehash(token));
+				const resp = await fetch(url, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						tiddlypwa: 1,
+						op: 'verify_auth',
+						token,
+						authcode,
+					}),
+				});
+				if (resp.status === 401) {
+					return { ok: false, reason: 'EAUTH' };
+				}
+				if (!resp.ok) {
+					return { ok: false, reason: `HTTP ${resp.status}` };
+				}
+				return { ok: true };
+			} catch (e) {
+				return { ok: false, reason: 'NETWORK', error: e };
+			}
+		}
+
 		async _getStatus() {
 			if (!this.browserToken) {
 				this.browserToken = await b64enc(crypto.getRandomValues(new Uint8Array(12)));
@@ -2286,7 +2812,25 @@ Formatted with `deno fmt`.
 			let pairToken = null;
 			let pairSalt = null;
 			let pairKey = null;
+			let searchToken = null;
 			let isPaired = false;
+			if (location.search && location.search.length > 1) {
+				try {
+					const searchParams = new URLSearchParams(location.search);
+					if (searchParams.has('token')) {
+						searchToken = searchParams.get('token');
+						searchParams.delete('token');
+						const remaining = searchParams.toString();
+						history.replaceState(
+							null,
+							'',
+							location.pathname + (remaining ? '?' + remaining : '') + location.hash,
+						);
+					}
+				} catch (e) {
+					console.error('Failed to scrub URL search token param', e);
+				}
+			}
 			if (location.hash.startsWith('#') && location.hash.length > 1) {
 				try {
 					const hashParams = new URLSearchParams(location.hash.slice(1));
@@ -2353,27 +2897,39 @@ Formatted with `deno fmt`.
 							this.salt = b64dec(pairSalt);
 						}
 						await this.deriveKeysFromBasebits(this.basebits);
-						const ok = await this.initialRead();
+						let pairServerUrl = null;
+						if (pairToken) {
+							pairServerUrl = new URL('/tid.dly', document.location).href;
+							try {
+								const bResp = await fetch('bootstrap.json', { cache: 'no-store' });
+								if (bResp.ok) {
+									const bData = await bResp.json();
+									if (typeof bData.endpoint === 'string' && bData.endpoint) {
+										pairServerUrl = new URL(bData.endpoint, document.location).href;
+									}
+								}
+							} catch (_e) {
+								// Fallback to /tid.dly
+							}
+						}
+						let authOk = true;
+						if (freshDb && pairToken && pairServerUrl) {
+							const authRes = await this.verifyAuthWithServer(pairServerUrl, pairToken);
+							if (!authRes.ok && authRes.reason === 'EAUTH') {
+								authOk = false;
+							}
+						}
+						const ok = authOk && await this.initialRead();
 						if (ok) {
 							this.logger.log('Unlocked directly via instant-pairing key');
 							this.modal.close();
 							delete this.modal;
 							if (freshDb && this.salt) {
-								this.db.transaction('metadata', 'readwrite').objectStore('metadata').put({ salt: this.salt });
+								await adb(
+									this.db.transaction('metadata', 'readwrite').objectStore('metadata').put({ salt: this.salt }),
+								);
 							}
-							if (pairToken) {
-								let serverUrl = new URL('/tid.dly', document.location).href;
-								try {
-									const bResp = await fetch('bootstrap.json', { cache: 'no-store' });
-									if (bResp.ok) {
-										const bData = await bResp.json();
-										if (typeof bData.endpoint === 'string' && bData.endpoint) {
-											serverUrl = new URL(bData.endpoint, document.location).href;
-										}
-									}
-								} catch (_e) {
-									// Fallback to /tid.dly
-								}
+							if (pairToken && pairServerUrl) {
 								const tx = this.db.transaction('syncservers', 'readwrite');
 								const store = tx.objectStore('syncservers');
 								const existingServers = await adb(store.getAll());
@@ -2385,7 +2941,7 @@ Formatted with `deno fmt`.
 								}
 								await adb(
 									store.put({
-										url: serverUrl,
+										url: pairServerUrl,
 										token: pairToken,
 										lastSync: new Date(0),
 									}),
@@ -2422,9 +2978,13 @@ Formatted with `deno fmt`.
 							resolve();
 						} catch (e) {
 							console.warn('Biometric unlock failed or cancelled:', e);
-							this.modal.setFeedback(
-								'<p class="tiddlypwa-form-error">Biometric unlock was cancelled. Please use password.</p>',
-							);
+							const isCancel = e?.name === 'NotAllowedError' || e?.name === 'AbortError';
+							const msg = isCancel
+								? 'Biometric unlock was cancelled. Please use password.'
+								: `Biometric unlock failed (${
+									$tw.utils.htmlEncode(e?.message || 'hardware error')
+								}). Please use password.`;
+							this.modal.setFeedback(`<p class="tiddlypwa-form-error">${msg}</p>`);
 							this.modal.clearBiometricPrompt();
 							this.modal.showForm();
 							resolve();
@@ -2445,6 +3005,7 @@ Formatted with `deno fmt`.
 			}
 			if (!this.enckeys) {
 				let bootstrapEndpoint;
+				let serverState = null;
 				const [weAreScrewed, missingWarning] = this.missingFeaturesWarning();
 				const seemsLikeDocs = $tw.wiki.getTiddlersWithTag('TiddlyPWA Docs').length > 0;
 				if (freshDb) {
@@ -2460,11 +3021,14 @@ Formatted with `deno fmt`.
 							cache: 'no-store',
 						});
 						const { state, endpoint, salt } = await resp.json();
+						serverState = state;
 						if (
 							(endpoint && typeof endpoint !== 'string') || (state && typeof state !== 'string') ||
 							(salt && typeof salt !== 'string')
 						) {
-							alert('Something is weird with the server! Unexpected types in bootstrap.json');
+							this.modal.setFeedback(
+								'<p class="tiddlypwa-form-error">Server returned unexpected types in bootstrap.json.</p>',
+							);
 						}
 						bootstrapEndpoint = endpoint && { url: endpoint };
 						this.modal.abortGiveUpButton();
@@ -2488,6 +3052,7 @@ Formatted with `deno fmt`.
 							this.modal.showForm(true);
 							return;
 						}
+						const safeEndpointHtml = $tw.utils.htmlEncode(endpoint || '');
 						if (state === 'localonly') {
 							this.modal.setBody(`
 								<p>Welcome to your new local-only wiki!</p>
@@ -2500,7 +3065,7 @@ Formatted with `deno fmt`.
 						} else if (state === 'fresh') {
 							this.modal.setBody(`
 								<p>Welcome to your new synchronized wiki!</p>
-								<p>Paste the token given to you by the administrator of the sync server <code>${endpoint}</code> and <strong>make up a strong password</strong>.</p>
+								<p>Paste the token given to you by the administrator of the sync server <code>${safeEndpointHtml}</code> and <strong>make up a strong password</strong>.</p>
 								<p>The password will be used to encrypt your data, hiding the content from the server and, if you choose not to use the "remember password" option, against unauthorized users of this device.</p>
 								<p>You will have to use that password to open this wiki on all synchronized devices/browsers.</p>
 							`);
@@ -2508,7 +3073,7 @@ Formatted with `deno fmt`.
 						} else if (state === 'existing') {
 							this.modal.setBody(`
 								<p>Welcome back to your synchronized wiki!</p>
-								<p>Log in using your credentials below. You are using the sync server <code>${endpoint}</code>.</p>
+								<p>Log in using your credentials below. You are using the sync server <code>${safeEndpointHtml}</code>.</p>
 							`);
 							askSalt = false;
 							this.salt = b64dec(salt);
@@ -2542,37 +3107,53 @@ Formatted with `deno fmt`.
 						}
 						if (askToken) {
 							if (!bootstrapEndpoint) {
-								alert(`This sync server is misconfigured: no endpoint found while state is '${state}'.`);
+								this.modal.setFeedback(
+									`<p class="tiddlypwa-form-error">Server is misconfigured: missing endpoint for state '${
+										$tw.utils.htmlEncode(state || '')
+									}'.</p>`,
+								);
 							}
 							let initialToken = bootstrapEndpoint?.token;
 							if (!initialToken) {
-								initialToken = new URLSearchParams(location.search).get('token');
+								initialToken = searchToken;
 							}
 							if (initialToken) {
 								bootstrapEndpoint.token = initialToken;
 							}
 							this.modal.addTokenInput(
-								(e) => bootstrapEndpoint.token = e.target.value.trim(),
+								(e) => {
+									if (!bootstrapEndpoint) bootstrapEndpoint = {};
+									bootstrapEndpoint.token = e.target.value.trim();
+								},
 								initialToken,
 								isPaired && !!pairToken,
 							);
 						}
 						if (askSalt) {
+							const validateSaltText = (rawSalt) => {
+								const saltText = String(rawSalt || '').trim();
+								if (saltText.length === 0) return '';
+								if (saltText.length < 16) return 'The salt is too short';
+								try {
+									b64dec(saltText);
+									return '';
+								} catch (_e) {
+									return 'Could not decode the salt';
+								}
+							};
+							this.modal.setSaltValidator(validateSaltText);
 							this.modal.addSaltInput((e) => {
 								const saltText = e.target.value.trim();
-								if (saltText.length == 0) {
+								const errMsg = validateSaltText(saltText);
+								if (saltText.length === 0) {
 									this.salt = null;
 									this.modal.setFeedback('');
-								} else if (saltText.length < 16) {
+								} else if (errMsg) {
 									this.salt = null;
-									this.modal.setFeedback('<p class=tiddlypwa-form-error>The salt is too short</p>');
+									this.modal.setFeedback(`<p class="tiddlypwa-form-error">${$tw.utils.htmlEncode(errMsg)}</p>`);
 								} else {
-									try {
-										this.salt = b64dec(saltText);
-									} catch (_e) {
-										this.salt = null;
-										this.modal.setFeedback('<p class=tiddlypwa-form-error>Could not decode the salt</p>');
-									}
+									this.salt = b64dec(saltText);
+									this.modal.setFeedback('');
 								}
 							});
 						}
@@ -2594,25 +3175,59 @@ Formatted with `deno fmt`.
 				this.releaseBoot();
 				const AW = require('$:/plugins/mblackman/tiddlypwa/argon2ian.js').ArgonWorker;
 				const argon = new AW();
-				await argon.ready;
-				let checked = false;
-				while (!checked) {
-					const password = await this.modal.formSubmitted();
-					this.modal.setProgress(null, 'Deriving encryption keys…');
-					if (!this.salt) this.salt = crypto.getRandomValues(new Uint8Array(32));
-					console.time('hash');
-					const basebits = await argon.hash(utfenc.encode(password), this.salt, { m: 1 << 17, t: 2 });
-					console.timeEnd('hash');
-					this.basebits = basebits;
-					await this.deriveKeysFromBasebits(this.basebits);
-					checked = await this.initialRead();
-					if (!checked) {
-						this.modal.setFeedback('<p class=tiddlypwa-form-error>Wrong password!</p>');
+				try {
+					await argon.ready;
+					let checked = false;
+					while (!checked) {
+						const password = await this.modal.formSubmitted();
+						this.modal.setProgress(null, 'Deriving encryption keys…');
+						if (!this.salt) this.salt = crypto.getRandomValues(new Uint8Array(32));
+						try {
+							console.time('hash');
+							const basebits = await argon.hash(utfenc.encode(password), this.salt, { m: 1 << 17, t: 2 });
+							console.timeEnd('hash');
+							this.basebits = basebits;
+							await this.deriveKeysFromBasebits(this.basebits);
+							if (freshDb && bootstrapEndpoint?.url && bootstrapEndpoint?.token && serverState === 'existing') {
+								this.modal.setProgress(null, 'Verifying credentials with sync server…');
+								const authRes = await this.verifyAuthWithServer(bootstrapEndpoint.url, bootstrapEndpoint.token);
+								if (!authRes.ok) {
+									this.enckeys = null;
+									this.mackey = null;
+									this.basebits = null;
+									const errMsg = authRes.reason === 'EAUTH'
+										? 'Wrong password or sync token!'
+										: `Could not verify password with sync server (${
+											$tw.utils.htmlEncode(authRes.reason)
+										}). Check your connection and try again.`;
+									this.modal.setFeedback(`<p class="tiddlypwa-form-error">${errMsg}</p>`);
+									checked = false;
+									continue;
+								}
+							}
+							checked = await this.initialRead();
+							if (!checked) {
+								this.enckeys = null;
+								this.mackey = null;
+								this.basebits = null;
+								this.modal.setFeedback('<p class="tiddlypwa-form-error">Wrong password!</p>');
+							}
+						} catch (e) {
+							console.error('Unlock failed:', e);
+							this.enckeys = null;
+							this.mackey = null;
+							this.basebits = null;
+							this.modal.setFeedback(
+								`<p class="tiddlypwa-form-error">Unlock failed: ${$tw.utils.htmlEncode(e?.message || String(e))}</p>`,
+							);
+							checked = false;
+						}
 					}
+				} finally {
+					argon.terminate();
 				}
-				argon.terminate();
 				if (freshDb) {
-					this.db.transaction('metadata', 'readwrite').objectStore('metadata').put({ salt: this.salt });
+					await adb(this.db.transaction('metadata', 'readwrite').objectStore('metadata').put({ salt: this.salt }));
 				}
 				if (bootstrapEndpoint) {
 					const { url, token } = bootstrapEndpoint;
@@ -2656,8 +3271,13 @@ Formatted with `deno fmt`.
 					title: '$:/status/TiddlyPWABiometricConfigured',
 					text: this.biometricSession ? 'yes' : 'no',
 				});
+				this.wiki.addTiddler({
+					title: '$:/status/TiddlyPWAMasterKeyInMemory',
+					text: this.basebits ? 'yes' : 'no',
+				});
 				await this.updatePairUrl();
 			})().catch((e) => console.error(e));
+			this.ensureSaverHydrationWrapper();
 			this.initServiceWorker(); // don't await
 			if (freshDb && navigator.storage) navigator.storage.persist().then(() => this.reflectStorageInfo());
 		}
@@ -2696,6 +3316,24 @@ Formatted with `deno fmt`.
 			cb(null, chg);
 		}
 
+		registerTitleHash(title, thash, b64) {
+			if (!title || typeof title !== 'string' || !thash) return;
+			const b64Key = b64 || b64encSync(thash);
+			this.titleToHashBuf.set(title, thash);
+			this.titleToHashB64.set(title, b64Key);
+			this.hashB64ToTitle.set(b64Key, title);
+		}
+
+		markAppWikiDirty() {
+			if (!this.origSyncerIsDirty && $tw.syncer && typeof $tw.syncer.isDirty === 'function') {
+				const origIsDirty = $tw.syncer.isDirty.bind($tw.syncer);
+				this.origSyncerIsDirty = origIsDirty;
+				$tw.syncer.isDirty = () => this.appWikiDirty || origIsDirty();
+			}
+			this.appWikiDirty = true;
+			$tw.syncer?.updateDirtyStatus?.();
+		}
+
 		titlehash(x) {
 			// keyed (hmac) because sync servers don't need to be able to compare contents between different users
 			return crypto.subtle.sign('HMAC', this.mackey, utfenc.encode(x));
@@ -2711,10 +3349,14 @@ Formatted with `deno fmt`.
 
 		async _saveTiddler(tiddler) {
 			const thash = await this.titlehash(tiddler.fields.title);
+			const b64thash = await b64enc(thash);
 			const key = this.enckey(thash);
-			const isBin = this.wiki.isBinaryTiddler(tiddler.fields.title);
+			const isBin = this.isBinaryContentType(tiddler.fields.type) ||
+				this.wiki.isBinaryTiddler(tiddler.fields.title);
 			const isSepBody = tiddler.fields.text && (isBin || tiddler.fields.text.length > 256);
-			const isBlobUrl = tiddler.fields._canonical_uri && tiddler.fields._canonical_uri.startsWith('blob:');
+			const isBlobUrl = typeof tiddler.fields._canonical_uri === 'string' &&
+				tiddler.fields._canonical_uri.startsWith('blob:');
+			const blobEntry = isBlobUrl ? this.blobRegistry.get(tiddler.fields._canonical_uri) : null;
 			const json = JSON.stringify(
 				Object.keys(tiddler.fields).reduce((o, k) => {
 					if (k === 'text' && isSepBody) return o;
@@ -2730,7 +3372,7 @@ Formatted with `deno fmt`.
 				key,
 				await encodeData(json, false, 256),
 			);
-			let sbiv, sbct;
+			let sbiv, sbct, newBlobSha;
 			if (isSepBody) {
 				sbiv = crypto.getRandomValues(new Uint8Array(12));
 				sbct = await crypto.subtle.encrypt(
@@ -2738,6 +3380,18 @@ Formatted with `deno fmt`.
 					key,
 					await encodeData(tiddler.fields.text, isBin, 256),
 				);
+				this.savedBlobSha.delete(b64thash);
+				if (!isBlobUrl) {
+					this.releaseBlobForTitle(tiddler.fields.title);
+				}
+			} else if (blobEntry && this.savedBlobSha.get(b64thash) !== blobEntry.sha256B64) {
+				sbiv = crypto.getRandomValues(new Uint8Array(12));
+				sbct = await crypto.subtle.encrypt(
+					{ name: 'AES-GCM', iv: sbiv },
+					key,
+					await encodeBinaryBytes(blobEntry.rawBytes, 256),
+				);
+				newBlobSha = blobEntry.sha256B64;
 			}
 			await new Promise((resolve, reject) => {
 				const txn = this.db.transaction('tiddlers', 'readwrite');
@@ -2747,14 +3401,19 @@ Formatted with `deno fmt`.
 					const existing = getReq.result;
 					let finalSbiv = sbiv;
 					let finalSbct = sbct;
-					if (!isSepBody && isBlobUrl && existing) {
+					if (!isSepBody && !finalSbiv && isBlobUrl && existing) {
 						finalSbiv = existing.sbiv;
 						finalSbct = existing.sbct;
 					}
 					const baseMtime = existing ? (existing.baseMtime !== undefined ? existing.baseMtime : existing.mtime) : null;
+					const serverSyncState = existing?.serverSyncState ? structuredClone(existing.serverSyncState) : undefined;
 					let minTime = Date.now();
 					if (baseMtime instanceof Date && baseMtime.getTime() >= minTime) {
 						minTime = baseMtime.getTime() + 1;
+					}
+					const maxServerBm = this.maxServerBaseMtimeMs(existing);
+					if (maxServerBm >= minTime) {
+						minTime = maxServerBm + 1;
 					}
 					if (existing?.mtime instanceof Date && existing.mtime.getTime() >= minTime) {
 						minTime = existing.mtime.getTime() + 1;
@@ -2768,12 +3427,18 @@ Formatted with `deno fmt`.
 						mtime: new Date(minTime), // Has to be unencrypted for sync conflict resolution
 						// also, *not* using the tiddler's modified field allows for importing tiddlers last modified in the past
 						baseMtime,
+						...(serverSyncState ? { serverSyncState } : {}),
 					});
 				};
 				txn.oncomplete = () => resolve();
 				txn.onerror = () => reject(txn.error);
 			});
+			if (newBlobSha) {
+				this.savedBlobSha.set(b64thash, newBlobSha);
+			}
+			this.registerTitleHash(tiddler.fields.title, thash, b64thash);
 			await this.reflectStorageInfo();
+			await this.refreshUnsyncedCount();
 		}
 
 		saveTiddler(tiddler, cb) {
@@ -2794,12 +3459,7 @@ Formatted with `deno fmt`.
 					tiddler.fields['module-type'] &&
 					tiddler.fields['module-type'] !== 'pwa-watcher')
 			) {
-				if (!this.origSyncerIsDirty && $tw.syncer) {
-					const origIsDirty = $tw.syncer.isDirty.bind($tw.syncer);
-					this.origSyncerIsDirty = origIsDirty;
-					$tw.syncer.isDirty = () => this.appWikiDirty || origIsDirty();
-				}
-				this.appWikiDirty = true; // make the UI insist on a save which would be the app save
+				this.markAppWikiDirty(); // make the UI insist on a save which would be the app save
 				return cb(null, '', 1);
 			}
 			this._saveTiddler(tiddler).then((_) => {
@@ -2819,10 +3479,21 @@ Formatted with `deno fmt`.
 			const obj = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').get(thash));
 			if (!obj) return null;
 			const tid = await this.parseEncryptedTiddler(obj);
+			this.registerTitleHash(title, thash, await b64enc(thash));
 			if (obj.sbiv && obj.sbct) {
-				tid.text = await decodeData(
-					await crypto.subtle.decrypt({ name: 'AES-GCM', iv: obj.sbiv }, this.enckey(thash), obj.sbct),
+				const decryptedBuf = await crypto.subtle.decrypt(
+					{ name: 'AES-GCM', iv: obj.sbiv },
+					this.enckey(thash),
+					obj.sbct,
 				);
+				if (this.isBinaryContentType(tid.type)) {
+					const blobUrl = await this.registerBinaryBlob(tid.title, decryptedBuf, tid.type);
+					tid._canonical_uri = blobUrl;
+					const entry = this.blobRegistry.get(blobUrl);
+					if (entry) this.savedBlobSha.set(await b64enc(thash), entry.sha256B64);
+				} else {
+					tid.text = await decodeData(decryptedBuf);
+				}
 			}
 			return tid;
 		}
@@ -2830,7 +3501,7 @@ Formatted with `deno fmt`.
 		loadTiddler(title, cb) {
 			this._loadTiddler(title).then((tid) => {
 				cb(null, tid);
-				if (title === $tw.syncer.titleSyncFilter) {
+				if (title === $tw.syncer.titleSyncFilter && tid && tid.text) {
 					// XXX: syncer should itself monitor for changes and recompile
 					$tw.syncer.filterFn = this.wiki.compileFilter(tid.text);
 				}
@@ -2842,6 +3513,10 @@ Formatted with `deno fmt`.
 
 		async _deleteTiddler(title) {
 			const thash = await this.titlehash(title);
+			const b64thash = await b64enc(thash);
+			this.registerTitleHash(title, thash, b64thash);
+			this.savedBlobSha.delete(b64thash);
+			this.releaseBlobForTitle(title);
 			await new Promise((resolve, reject) => {
 				const txn = this.db.transaction('tiddlers', 'readwrite');
 				const store = txn.objectStore('tiddlers');
@@ -2849,9 +3524,14 @@ Formatted with `deno fmt`.
 				getReq.onsuccess = () => {
 					const existing = getReq.result;
 					const baseMtime = existing ? (existing.baseMtime !== undefined ? existing.baseMtime : existing.mtime) : null;
+					const serverSyncState = existing?.serverSyncState ? structuredClone(existing.serverSyncState) : undefined;
 					let minTime = Date.now();
 					if (baseMtime instanceof Date && baseMtime.getTime() >= minTime) {
 						minTime = baseMtime.getTime() + 1;
+					}
+					const maxServerBm = this.maxServerBaseMtimeMs(existing);
+					if (maxServerBm >= minTime) {
+						minTime = maxServerBm + 1;
 					}
 					if (existing?.mtime instanceof Date && existing.mtime.getTime() >= minTime) {
 						minTime = existing.mtime.getTime() + 1;
@@ -2865,12 +3545,14 @@ Formatted with `deno fmt`.
 						mtime: new Date(minTime),
 						deleted: true,
 						baseMtime,
+						...(serverSyncState ? { serverSyncState } : {}),
 					});
 				};
 				txn.oncomplete = () => resolve();
 				txn.onerror = () => reject(txn.error);
 			});
 			await this.reflectStorageInfo();
+			await this.refreshUnsyncedCount();
 		}
 
 		deleteTiddler(title, cb, _options) {
@@ -2879,15 +3561,11 @@ Formatted with `deno fmt`.
 			}
 			this._deleteTiddler(title).then((_) => {
 				if (this.tiddlersInFile.has(title)) {
-					if (!this.origSyncerIsDirty && $tw.syncer) {
-						const origIsDirty = $tw.syncer.isDirty.bind($tw.syncer);
-						this.origSyncerIsDirty = origIsDirty;
-						$tw.syncer.isDirty = () => this.appWikiDirty || origIsDirty();
-					}
-					this.appWikiDirty = true;
-					$tw.syncer?.updateDirtyStatus?.();
+					this.markAppWikiDirty();
 					this.logger.alert(
-						`You have deleted the tiddler <code>${title}</code> which was in the app wiki file. If you want it gone, you must also save the app wiki; conversely, you can refresh the page to restore it.`,
+						`You have deleted the tiddler <code>${
+							$tw.utils.htmlEncode(title)
+						}</code> which was in the app wiki file. If you want it gone, you must also save the app wiki; conversely, you can refresh the page to restore it.`,
 					);
 				}
 				cb(null);
@@ -3003,7 +3681,7 @@ Formatted with `deno fmt`.
 										etag,
 									},
 								});
-							const cache = await caches.open('tiddlypwa');
+							const cache = await caches.open(this.getScopedCacheName());
 							const curPageUrl = new URL(location.pathname, location.origin).href;
 							let matchedCurrentPage = false;
 							for (const req of await cache.keys()) {
@@ -3041,24 +3719,25 @@ Formatted with `deno fmt`.
 			}
 		}
 
-		async _syncOneUnlocked({ url, token, lastSync = new Date(0) }, all = false) {
+		async _syncOneUnlocked(server, all = false) {
+			const { url, token, lastSync = new Date(0) } = server;
+			const serverKey = this.getServerSyncKey(server);
 			this.logger.log('sync started', url, lastSync, all);
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWASyncingWith', text: url });
 			const changes = [];
 			const it = adbiter(this.db.transaction('tiddlers').objectStore('tiddlers').openCursor());
 			for await (const tid of it) {
-				const isDirty = tid.baseMtime === null ||
-					(tid.baseMtime instanceof Date && tid.mtime instanceof Date &&
-						tid.mtime.getTime() !== tid.baseMtime.getTime());
-				if (all || tid.mtime > lastSync || isDirty) changes.push(tid);
+				const isDirty = this.isTiddlerDirtyForServer(tid, serverKey);
+				if (all || isDirty || (!tid.serverSyncState && tid.mtime > lastSync)) changes.push(tid);
 			}
 			const clientChanges = [];
 			const localChangesByHash = new Map();
 			let newestChg = new Date(0);
 			for (const tid of changes) {
-				const { thash, iv, ct, sbiv, sbct, mtime, deleted, baseMtime } = tid;
+				const { thash, iv, ct, sbiv, sbct, mtime, deleted } = tid;
 				if (arrayEq(thash, this.storyListHash)) continue;
 				const b64hash = await b64enc(thash);
+				const serverBaseMtime = this.getBaseMtimeForServer(tid, serverKey);
 				const tidjson = {
 					thash: b64hash,
 					ct: ct && (await b64enc(ct)),
@@ -3067,9 +3746,9 @@ Formatted with `deno fmt`.
 					sbiv: sbiv && (await b64enc(sbiv)),
 					mtime,
 					deleted,
-					baseMtime: baseMtime
-						? (baseMtime instanceof Date ? baseMtime.toISOString() : new Date(baseMtime).toISOString())
-						: undefined,
+					baseMtime: serverBaseMtime instanceof Date
+						? serverBaseMtime.toISOString()
+						: (serverBaseMtime ? new Date(serverBaseMtime).toISOString() : null),
 				};
 				clientChanges.push(tidjson);
 				localChangesByHash.set(b64hash, tid);
@@ -3188,6 +3867,8 @@ Formatted with `deno fmt`.
 
 						if (this.tiddlersAreEqual(ourDecrypted, remoteDecrypted)) {
 							this.logger.log('False conflict suppressed (identical payload):', thash);
+							this.revokeTempBlob(ourDecrypted);
+							this.revokeTempBlob(remoteDecrypted);
 							idbWrites.push(remotetid);
 							toDecrypt.push(remotetid);
 						} else {
@@ -3196,22 +3877,39 @@ Formatted with `deno fmt`.
 								// Server canonical version wins; preserve local edit in conflict copy
 								this.logger.log('Server is canonical; preserving local conflict copy');
 								if (ourDecrypted) {
-									conflictTiddlersToAdd.push(
-										this.createConflictTiddler(ourDecrypted, originalTitle, 'local', ourMtime),
-									);
+									const conflictTid = this.createConflictTiddler(ourDecrypted, originalTitle, 'local', ourMtime);
+									if (
+										typeof conflictTid.fields._canonical_uri === 'string' &&
+										conflictTid.fields._canonical_uri.startsWith('blob:')
+									) {
+										this.bindBlobTitle(conflictTid.fields.title, conflictTid.fields._canonical_uri);
+									}
+									conflictTiddlersToAdd.push(conflictTid);
 									conflictedTitlesInPass.add(originalTitle);
 								}
+								this.revokeTempBlob(remoteDecrypted);
 								idbWrites.push(remotetid);
 								toDecrypt.push(remotetid);
 							} else {
 								// Local is newer and was accepted by server: local remains canonical, preserve remote copy
 								this.logger.log('Local is newer; keeping local canonical and saving remote conflict copy');
 								if (remoteDecrypted) {
-									conflictTiddlersToAdd.push(
-										this.createConflictTiddler(remoteDecrypted, originalTitle, 'remote', remotetid.mtime),
+									const conflictTid = this.createConflictTiddler(
+										remoteDecrypted,
+										originalTitle,
+										'remote',
+										remotetid.mtime,
 									);
+									if (
+										typeof conflictTid.fields._canonical_uri === 'string' &&
+										conflictTid.fields._canonical_uri.startsWith('blob:')
+									) {
+										this.bindBlobTitle(conflictTid.fields.title, conflictTid.fields._canonical_uri);
+									}
+									conflictTiddlersToAdd.push(conflictTid);
 									conflictedTitlesInPass.add(originalTitle);
 								}
+								this.revokeTempBlob(ourDecrypted);
 							}
 						}
 					} else if (ourtid && !ourtid.deleted && remotetid.deleted) {
@@ -3222,15 +3920,21 @@ Formatted with `deno fmt`.
 							// Remote delete is canonical: Apply deletion, preserve local edits in conflict copy
 							this.logger.log('Remote delete is canonical; preserving local edit in conflict copy');
 							if (ourDecrypted) {
-								conflictTiddlersToAdd.push(
-									this.createConflictTiddler(ourDecrypted, originalTitle, 'local', ourMtime),
-								);
+								const conflictTid = this.createConflictTiddler(ourDecrypted, originalTitle, 'local', ourMtime);
+								if (
+									typeof conflictTid.fields._canonical_uri === 'string' &&
+									conflictTid.fields._canonical_uri.startsWith('blob:')
+								) {
+									this.bindBlobTitle(conflictTid.fields.title, conflictTid.fields._canonical_uri);
+								}
+								conflictTiddlersToAdd.push(conflictTid);
 								conflictedTitlesInPass.add(originalTitle);
 							}
 							idbWrites.push(remotetid);
 							titleHashesToDelete.add(thash);
 						} else {
 							// Local edit is newer: Local edit resurrects tiddler
+							this.revokeTempBlob(ourDecrypted);
 							this.logger.log('Local edit is newer than remote delete; resurrecting local');
 						}
 					} else if (ourtid && ourtid.deleted && !remotetid.deleted) {
@@ -3239,6 +3943,7 @@ Formatted with `deno fmt`.
 						const originalTitle = remoteDecrypted?.title || 'Untitled';
 						if (isServerConflict || remotetid.mtime.getTime() > ourMtime.getTime()) {
 							// Remote edit is newer: Remote edit resurrects tiddler
+							this.revokeTempBlob(remoteDecrypted);
 							this.logger.log('Remote edit is canonical; applying remote edit');
 							idbWrites.push(remotetid);
 							toDecrypt.push(remotetid);
@@ -3246,9 +3951,19 @@ Formatted with `deno fmt`.
 							// Local delete is newer: Delete wins, preserve remote edit in conflict copy
 							this.logger.log('Local delete is newer than remote edit; preserving remote edit in conflict copy');
 							if (remoteDecrypted) {
-								conflictTiddlersToAdd.push(
-									this.createConflictTiddler(remoteDecrypted, originalTitle, 'remote', remotetid.mtime),
+								const conflictTid = this.createConflictTiddler(
+									remoteDecrypted,
+									originalTitle,
+									'remote',
+									remotetid.mtime,
 								);
+								if (
+									typeof conflictTid.fields._canonical_uri === 'string' &&
+									conflictTid.fields._canonical_uri.startsWith('blob:')
+								) {
+									this.bindBlobTitle(conflictTid.fields.title, conflictTid.fields._canonical_uri);
+								}
+								conflictTiddlersToAdd.push(conflictTid);
 								conflictedTitlesInPass.add(originalTitle);
 							}
 						}
@@ -3285,8 +4000,17 @@ Formatted with `deno fmt`.
 					const getReq = store.get(tid.thash);
 					getReq.onsuccess = () => {
 						const current = getReq.result;
+						const nextState = {};
+						if (current?.serverSyncState && typeof current.serverSyncState === 'object') {
+							for (const [sk, sv] of Object.entries(current.serverSyncState)) {
+								nextState[sk] = {
+									baseMtime: sv?.baseMtime ?? null,
+									syncedLocalMtime: null,
+								};
+							}
+						}
 						// If a local edit happened during the fetch, its mtime will be newer
-						// than what we snapshotted. Don't overwrite content — it'll sync next cycle,
+						// than what we snapshotted. Don't overwrite content - it'll sync next cycle,
 						// but MUST advance baseMtime to the server's canonical mtime so the next
 						// sync doesn't repeatedly fail OCC with a stale baseMtime (snowball loop).
 						if (current && current.mtime instanceof Date) {
@@ -3294,6 +4018,8 @@ Formatted with `deno fmt`.
 								[...localChangesByHash.keys()].find((k) => arrayEq(localChangesByHash.get(k).thash, tid.thash)),
 							);
 							if (snapshotEntry && current.mtime.getTime() > snapshotEntry.mtime.getTime()) {
+								nextState[serverKey] = { baseMtime: tid.mtime, syncedLocalMtime: null };
+								current.serverSyncState = nextState;
 								current.baseMtime = tid.mtime;
 								if (current.mtime.getTime() <= tid.mtime.getTime()) {
 									current.mtime = new Date(tid.mtime.getTime() + 1);
@@ -3303,6 +4029,11 @@ Formatted with `deno fmt`.
 								return;
 							}
 						}
+						nextState[serverKey] = {
+							baseMtime: tid.mtime,
+							syncedLocalMtime: tid.mtime instanceof Date ? tid.mtime.getTime() : null,
+						};
+						tid.serverSyncState = nextState;
 						store.put(tid);
 					};
 				}
@@ -3312,8 +4043,48 @@ Formatted with `deno fmt`.
 				});
 			}
 
+			if (respJson.tombstoneReset) {
+				const serverChangedSet = new Set(serverChanges.map((c) => c.thash));
+				const allLocal = await adb(this.db.transaction('tiddlers').objectStore('tiddlers').getAll());
+				const resetTombstones = [];
+				for (const localTid of allLocal) {
+					if (localTid.deleted || (this.storyListHash && arrayEq(localTid.thash, this.storyListHash))) continue;
+					const b64hash = await b64enc(localTid.thash);
+					if (serverChangedSet.has(b64hash) || localChangesByHash.has(b64hash)) continue;
+					if (this.isTiddlerDirtyForServer(localTid, serverKey)) continue;
+					resetTombstones.push({ localTid, b64hash });
+				}
+				if (resetTombstones.length > 0) {
+					const txn = this.db.transaction('tiddlers', 'readwrite');
+					const store = txn.objectStore('tiddlers');
+					for (const { localTid, b64hash } of resetTombstones) {
+						const nowDate = new Date(
+							Math.max(Date.now(), (localTid.mtime instanceof Date ? localTid.mtime.getTime() : 0) + 1),
+						);
+						const nextState = localTid.serverSyncState ? { ...localTid.serverSyncState } : {};
+						nextState[serverKey] = { baseMtime: nowDate, syncedLocalMtime: nowDate.getTime() };
+						store.put({
+							thash: localTid.thash,
+							iv: undefined,
+							ct: undefined,
+							sbiv: undefined,
+							sbct: undefined,
+							mtime: nowDate,
+							deleted: true,
+							baseMtime: nowDate,
+							serverSyncState: nextState,
+						});
+						titleHashesToDelete.add(b64hash);
+					}
+					await new Promise((resolve, reject) => {
+						txn.oncomplete = resolve;
+						txn.onerror = () => reject(txn.error);
+					});
+				}
+			}
+
 			// Update baseMtime for successfully synced local changes that did not conflict.
-			// Read-modify-write: only touch baseMtime, preserving any newer content.
+			// Read-modify-write: only touch baseMtime and per-server sync state, keeping local mtime monotonic.
 			const nonConflictedLocalHashes = [];
 			for (const [b64hash, tid] of localChangesByHash) {
 				if (!conflictSet.has(b64hash)) {
@@ -3330,11 +4101,15 @@ Formatted with `deno fmt`.
 					getReq.onsuccess = () => {
 						const current = getReq.result;
 						if (current) {
-							if (current.mtime.getTime() === oldMtime.getTime()) {
-								current.mtime = newBaseMtime;
-							} else if (current.mtime.getTime() <= newBaseMtime.getTime()) {
-								current.mtime = new Date(newBaseMtime.getTime() + 1);
-							}
+							const nextState = current.serverSyncState ? structuredClone(current.serverSyncState) : {};
+							const oldMs = oldMtime instanceof Date ? oldMtime.getTime() : new Date(oldMtime).getTime();
+							const curMs = current.mtime instanceof Date ? current.mtime.getTime() : 0;
+							const unchangedDuringFetch = curMs === oldMs;
+							nextState[serverKey] = {
+								baseMtime: newBaseMtime,
+								syncedLocalMtime: unchangedDuringFetch ? curMs : null,
+							};
+							current.serverSyncState = nextState;
 							current.baseMtime = newBaseMtime;
 							store.put(current);
 						}
@@ -3359,10 +4134,25 @@ Formatted with `deno fmt`.
 				this.logger.log(`Sync conflict detected: ${conflictTiddlersToAdd.length} conflict copies preserved.`);
 			}
 			if (titleHashesToDelete.size > 0) {
-				for (const title of $tw.wiki.allTitles()) {
-					if (titleHashesToDelete.has(await b64enc(await this.titlehash(title)))) {
-						this.deletedQueue.add(title);
-						this.changesChannel.postMessage({ title, del: true });
+				const unresolved = new Set();
+				for (const h of titleHashesToDelete) {
+					const cachedTitle = this.hashB64ToTitle.get(h);
+					if (cachedTitle) {
+						this.deletedQueue.add(cachedTitle);
+						this.changesChannel.postMessage({ title: cachedTitle, del: true });
+					} else {
+						unresolved.add(h);
+					}
+				}
+				if (unresolved.size > 0) {
+					for (const title of $tw.wiki.allTitles()) {
+						const thashBuf = await this.titlehash(title);
+						const h = await b64enc(thashBuf);
+						if (unresolved.has(h)) {
+							this.registerTitleHash(title, thashBuf, h);
+							this.deletedQueue.add(title);
+							this.changesChannel.postMessage({ title, del: true });
+						}
 					}
 				}
 			}
@@ -3371,42 +4161,35 @@ Formatted with `deno fmt`.
 				const tid = await this.parseEncryptedTiddler(x);
 				const title = tid?.title;
 				if (!title || isDraftTiddler(tid)) continue;
-				// isReady, so only go through the syncer mechanism here, even though that results in double decryption
+				this.registerTitleHash(title, x.thash, await b64enc(x.thash));
 				if (title !== '$:/StoryList') {
-					const draftTitle = this.wiki.findDraft?.(title) || `Draft of '${title}'`;
-					if (this.wiki.tiddlerExists(draftTitle) && !conflictedTitlesInPass.has(title)) {
-						const fullTid = (x.sbiv && x.sbct) ? ((await this.decryptRawTiddler(x)) || tid) : tid;
-						const baseTid = this.wiki.getTiddler(title);
-						const baseIsFull = baseTid && !baseTid.fields._is_skinny;
-						const changedVsBase = !baseIsFull || !this.tiddlersAreEqual(baseTid.fields, fullTid);
-						const draftTid = this.wiki.getTiddler(draftTitle);
-						const draftText = draftTid?.fields?.text || '';
-						const draftTags = Array.isArray(draftTid?.fields?.tags)
-							? $tw.utils.stringifyList(draftTid.fields.tags)
-							: (draftTid?.fields?.tags || '');
-						const fullTags = Array.isArray(fullTid?.tags)
-							? $tw.utils.stringifyList(fullTid.tags)
-							: (fullTid?.tags || '');
-						if (changedVsBase && (draftText !== (fullTid.text || '') || draftTags !== fullTags)) {
-							const conflictTid = this.createConflictTiddler(fullTid, title, 'remote', x.mtime);
-							this.wiki.addTiddler(conflictTid);
-							this.wiki.addTiddler({
-								title: '$:/status/TiddlyPWAConflictsCount',
-								text: String(this.wiki.filterTiddlers('[tag[$:/tags/TiddlyPWA/Conflict]]').length),
-							});
-							this.wiki.deleteTiddler('$:/temp/HideConflictBanner');
-							this.logger.log(
-								`Notice: "${title}" was updated on another device while you have a draft open! A remote conflict copy "${conflictTid.fields.title}" has been preserved.`,
-							);
+					let resolvedTid = tid;
+					if (x.sbiv && x.sbct) {
+						if (mustEagerLoad(tid)) {
+							resolvedTid = (await this.decryptRawTiddler(x, { registerForTitle: true })) || tid;
+						} else {
+							resolvedTid = { ...tid, _is_skinny: true };
 						}
 					}
-					this.modifiedQueue.add(title);
+					const draftTitle = this.wiki.findDraft?.(title) || `Draft of '${title}'`;
+					if (this.wiki.tiddlerExists(draftTitle) && !conflictedTitlesInPass.has(title)) {
+						this.checkDraftCollision(title, resolvedTid, x.mtime);
+					}
+					if (
+						!resolvedTid._is_skinny && typeof resolvedTid._canonical_uri === 'string' &&
+						resolvedTid._canonical_uri.startsWith('blob:')
+					) {
+						this.bindBlobTitle(title, resolvedTid._canonical_uri);
+					} else if (!resolvedTid._is_skinny) {
+						this.releaseBlobForTitle(title);
+					}
+					$tw.syncer.storeTiddler(resolvedTid);
 					this.changesChannel.postMessage({ title });
 				}
 			}
 			if (appEtag && navigator.serviceWorker.controller) {
 				const stripWeak = (x) => x && (x.startsWith('W/') ? x.slice(2) : x);
-				const cache = await caches.open('tiddlypwa');
+				const cache = await caches.open(this.getScopedCacheName());
 				for (const req of await cache.keys()) {
 					if (!isCurrentUrl(req.url)) continue;
 					const resp = await cache.match(req);
@@ -3416,7 +4199,7 @@ Formatted with `deno fmt`.
 				}
 			}
 			if (pendingPatches && Array.isArray(pendingPatches) && pendingPatches.length > 0) {
-				this.applyPendingWatcherPatches(pendingPatches);
+				await this.applyPendingWatcherPatches(pendingPatches);
 			}
 			this.logger.log('sync done', url);
 			if (serverTimeHdr) {
@@ -3433,6 +4216,7 @@ Formatted with `deno fmt`.
 
 		async _syncManyUnlocked(all) {
 			let hadSuccess = false;
+			let lastError = '';
 			try {
 				const servers = [];
 				await new Promise((resolve) =>
@@ -3447,14 +4231,20 @@ Formatted with `deno fmt`.
 				);
 				for (const [key, server] of servers) {
 					try {
+						const wasFirstSync = !server.lastSync || new Date(server.lastSync).getTime() === 0;
 						server.lastSync = await this._syncOneUnlocked(server, all);
 						await adb(this.db.transaction('syncservers', 'readwrite').objectStore('syncservers').put(server, key));
+						if (wasFirstSync && this.monitorStream && !this.monitorUsingHalftoken) {
+							this.monitorStream.close();
+							this.monitorStream = null;
+							this.startedMonitor = false;
+						}
 						hadSuccess = true;
-						this.hadFetchError = false;
 					} catch (e) {
 						if (e.name === 'AbortError') {
-							/* Not an error */
+							lastError = 'Sync cancelled or timed out';
 						} else if (e.name === 'FetchError') {
+							lastError = `Could not reach sync server "${server.url}"`;
 							if (!this.hadFetchError) {
 								this.logger.alert(
 									`Could not sync with server "${server.url}"! You might be offline (or the server is).`,
@@ -3463,10 +4253,14 @@ Formatted with `deno fmt`.
 								this.hadFetchError = true;
 							}
 						} else {
+							lastError = e?.message || String(e);
 							this.logger.alert(`Could not sync with server "${server.url}"!`, e);
 							console.error(e);
 						}
 					}
+				}
+				if (!lastError && hadSuccess) {
+					this.hadFetchError = false;
 				}
 				$tw.syncer.syncFromServer(); // "server" being our local DB that we just updated, actually
 				await this.reflectSyncServers();
@@ -3485,6 +4279,7 @@ Formatted with `deno fmt`.
 				this.wiki.addTiddler({ title: '$:/status/TiddlyPWASyncing', text: 'no' });
 				$tw.utils.removeClass(document.body, 'tiddlypwa-syncing');
 				this.isSyncing = false;
+				await this.refreshUnsyncedCount({ syncing: false, error: lastError });
 				if (this.wantResync) {
 					this.wantResync = false;
 					this.backgroundSync();
@@ -3500,6 +4295,7 @@ Formatted with `deno fmt`.
 			this.isSyncing = true;
 			$tw.utils.addClass(document.body, 'tiddlypwa-syncing');
 			this.wiki.addTiddler({ title: '$:/status/TiddlyPWASyncing', text: 'yes' });
+			this.updateSyncUiStatus({ syncing: true });
 			return navigator.locks.request(`tiddlypwa:${location.pathname}`, (_lck) => this._syncManyUnlocked(all));
 		}
 
