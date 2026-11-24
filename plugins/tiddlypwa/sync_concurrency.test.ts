@@ -119,6 +119,7 @@ function createHarness() {
 		},
 		hooks: { invokeHook: () => {} },
 		syncer: {
+			tiddlerInfo: {} as Record<string, any>,
 			storeTiddler: (f: any) => wikiMap.set(f.title, new MockTiddler(f)),
 			syncFromServer: () => {},
 			updateDirtyStatus: () => {},
@@ -282,18 +283,64 @@ Deno.test('P0-4: Multi-server sync tracks serverSyncState per server and sends e
 	assertEquals(thashB64.length > 0, true);
 });
 
-Deno.test('P2-6 & P1-4: Tombstone keeps bundled app tiddler deleted across initialRead and watcher patch fails safely', async () => {
-	const { adaptor, wikiMap, deletedTiddlers } = createHarness();
+Deno.test('P2-6 & P1-4: Tombstone keeps bundled app tiddler deleted across initialRead without deleting bundled plugins or triggering syncer delete', async () => {
+	const { adaptor, wikiMap, deletedTiddlers, $tw } = createHarness();
 	await initCrypto(adaptor);
 	wikiMap.set('BundledDoc', { fields: { title: 'BundledDoc', text: 'bundled' } });
-	adaptor.tiddlersInFile = new Set(['BundledDoc']);
+	wikiMap.set('$:/plugins/mblackman/media-importer', {
+		fields: {
+			title: '$:/plugins/mblackman/media-importer',
+			type: 'application/json',
+			'plugin-type': 'plugin',
+			text: '{"tiddlers":{}}',
+		},
+	});
+	wikiMap.set('$:/themes/tiddlywiki/vanilla', {
+		fields: {
+			title: '$:/themes/tiddlywiki/vanilla',
+			type: 'application/json',
+			'plugin-type': 'theme',
+			text: '{"tiddlers":{}}',
+		},
+	});
+	wikiMap.set('$:/custom/macro.js', {
+		fields: {
+			title: '$:/custom/macro.js',
+			type: 'application/javascript',
+			'module-type': 'macro',
+			text: 'exports.name = "x";',
+		},
+	});
+	wikiMap.set('$:/core', {
+		fields: { title: '$:/core', type: 'application/json', 'plugin-type': 'plugin', text: '{}' },
+	});
+	adaptor.tiddlersInFile = new Set([
+		'BundledDoc',
+		'$:/plugins/mblackman/media-importer',
+		'$:/themes/tiddlywiki/vanilla',
+		'$:/custom/macro.js',
+		'$:/core',
+	]);
+	$tw.syncer.tiddlerInfo['BundledDoc'] = { changeCount: 0 };
 
-	// Store a tombstone in IDB matching BundledDoc
+	// Store stale tombstones in IDB for both a bundled doc and bundled plugins/modules
 	await adaptor._deleteTiddler('BundledDoc');
+	await adaptor._deleteTiddler('$:/plugins/mblackman/media-importer');
+	await adaptor._deleteTiddler('$:/themes/tiddlywiki/vanilla');
+	await adaptor._deleteTiddler('$:/custom/macro.js');
+	await adaptor._deleteTiddler('$:/core');
+
 	const ok = await adaptor.initialRead();
 	assertEquals(ok, true);
+	// Non-plugin bundled doc is removed silently (tiddlerInfo cleared so syncer does not re-delete/alert)
 	assert(deletedTiddlers.includes('BundledDoc'));
 	assertEquals(wikiMap.has('BundledDoc'), false);
+	assertEquals('BundledDoc' in $tw.syncer.tiddlerInfo, false);
+	// Bundled plugins, themes, JS modules, and $:/core must NOT be deleted by stale tombstones
+	assertEquals(wikiMap.has('$:/plugins/mblackman/media-importer'), true);
+	assertEquals(wikiMap.has('$:/themes/tiddlywiki/vanilla'), true);
+	assertEquals(wikiMap.has('$:/custom/macro.js'), true);
+	assertEquals(wikiMap.has('$:/core'), true);
 
 	// Watcher patch durability: if _saveTiddler fails, patchId must NOT enter ackedPatchIds
 	adaptor._saveTiddler = async () => {

@@ -2551,7 +2551,16 @@ Formatted with `deno fmt`.
 			if (deletedRecords.length > 0 && this.tiddlersInFile.size > 0) {
 				const deletedHashes = new Set(await Promise.all(deletedRecords.map((r) => b64enc(r.thash))));
 				for (const fileTitle of this.tiddlersInFile) {
+					const fileTid = this.wiki.getTiddler(fileTitle);
+					const isBundledRuntime = fileTitle === '$:/core' ||
+						!!fileTid?.fields?.['plugin-type'] ||
+						!!fileTid?.fields?.['module-type'] ||
+						(fileTitle.startsWith('$:/') && fileTid?.fields?.type === 'application/javascript');
+					if (isBundledRuntime) continue;
 					if (deletedHashes.has(await b64enc(await this.titlehash(fileTitle)))) {
+						if ($tw.syncer?.tiddlerInfo) {
+							delete $tw.syncer.tiddlerInfo[fileTitle];
+						}
 						this.wiki.deleteTiddler(fileTitle);
 					}
 				}
