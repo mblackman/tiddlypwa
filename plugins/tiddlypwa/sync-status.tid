@@ -1,7 +1,28 @@
 title: $:/plugins/mblackman/tiddlypwa/sync-status
 
+<$reveal type="match" state="$:/status/TiddlyPWASyncState" text="error">
+<div class="tiddlypwa-form-error">
+	<strong>Last sync failed:</strong> {{$:/status/TiddlyPWALastSyncError}}
+	<$reveal type="nomatch" state="$:/status/TiddlyPWASyncing" text="yes">
+		<$button message="tiddlypwa-sync">Retry now</$button>
+	</$reveal>
+</div>
+</$reveal>
+
+<$reveal type="match" state="$:/status/TiddlyPWASyncState" text="offline">
+<p><strong>Status: Offline</strong> - changes are saved locally in IndexedDB until you reconnect.</p>
+</$reveal>
+
+<$reveal type="match" state="$:/status/TiddlyPWASyncState" text="dirty">
+<p><strong>Status: Unsynced changes pending</strong> ({{$:/status/TiddlyPWAUnsyncedCount}}).</p>
+</$reveal>
+
+<$reveal type="match" state="$:/status/TiddlyPWASyncState" text="synced">
+<p><strong>Status: Up to date</strong> - all changes are saved and synced.</p>
+</$reveal>
+
 <$reveal type="nomatch" state="$:/status/TiddlyPWASyncing" text="yes">
-<$button message="tiddlypwa-sync">Sync now</$button>?
+<$button message="tiddlypwa-sync">Sync now</$button>
 </$reveal>
 
 <$reveal type="match" state="$:/status/TiddlyPWASyncing" text="yes">
@@ -13,7 +34,3 @@ title: $:/plugins/mblackman/tiddlypwa/sync-status
 <p>If there are somehow changes that aren't being saved on the server, you can try to <$button message="tiddlypwa-sync-all">sync with all contents</$button>.</p>
 <p>Live updates status: {{$:/status/TiddlyPWARealtime}}.</p>
 </details>
-
-<$reveal type="match" state="$:/status/TiddlyPWAOnline" text="no">
-(Seems like you are currently ''offline'' so sync won't work right now.)
-</$reveal>

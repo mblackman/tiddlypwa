@@ -4,7 +4,7 @@ title: $:/themes/nico/notebook/ui/Search
 type: text/vnd.tiddlywiki
 
 \define advanced-search-actions()
-<$action-setfield $tiddler="$:/temp/advancedsearch/input" text={{$:/temp/notebook-search}}/>
+<$action-setfield $tiddler="$:/temp/advancedsearch/input" text={{$:/temp/search/input}}/>
 <$action-setfield $tiddler="$:/temp/advancedsearch/refresh" text="yes"/>
 <$action-navigate $to="$:/AdvancedSearch"/>
 \end

@@ -29,7 +29,8 @@ Formatted with `deno fmt`.
 				ecLevel: ecLevel || 'M',
 			});
 		} catch (e) {
-			return '<div class="tc-error">Failed to generate QR code: ' + e.message + '</div>';
+			const msg = $tw.utils?.htmlEncode ? $tw.utils.htmlEncode(e.message || String(e)) : String(e.message || e);
+			return '<div class="tc-error">Failed to generate QR code: ' + msg + '</div>';
 		}
 	};
 })();

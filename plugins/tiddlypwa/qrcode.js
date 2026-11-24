@@ -615,7 +615,7 @@ Formatted with `deno fmt`.
 			}
 		}
 
-		return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalSize} ${totalSize}" shape-rendering="crispEdges" style="max-width: 100%; height: auto; display: block; margin: 0 auto; background: #ffffff;">` +
+		return `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 ${totalSize} ${totalSize}" shape-rendering="crispEdges" style="width: 100%; max-width: 240px; height: auto; display: block; margin: 0 auto; background: #ffffff;">` +
 			`<rect width="${totalSize}" height="${totalSize}" fill="#ffffff"/>` +
 			`<path d="${pathD}" fill="#000000"/>` +
 			`</svg>`;

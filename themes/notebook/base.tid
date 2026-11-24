@@ -72,6 +72,7 @@ h1.tc-site-title {
   top: 0;
   left: 0;
   right: 0;
+  padding-top: env(safe-area-inset-top, 0px);
   /* The z-index needs to be above the z-index used in tiddlers in zoomin view */
   z-index: 501;
 }
@@ -89,6 +90,7 @@ h1.tc-site-title {
   bottom: 0;
   left: 0;
   right: 0;
+  padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
   /* The z-index needs to be above the z-index used in tiddlers in zoomin view */
   z-index: 501;
 }
@@ -316,7 +318,7 @@ input[type="search"]::-webkit-search-cancel-button {
     width: 100%;
     left: 0;
     top: 0;
-    bottom: 48px;
+    bottom: calc(48px + env(safe-area-inset-bottom, 0px));
     z-index: 3000;
     animation: sidebar-slide ease-in .2s;
     animation-fill-mode: forwards;
@@ -604,6 +606,18 @@ div.tc-tab-buttons button.tc-tab-selected {
 
 .tc-drop-down a, .tc-drop-down button {
   padding: 3px 15px !important;
+}
+
+@media (pointer: coarse) {
+  input, textarea {
+    font-size: max(1rem, 16px);
+  }
+  .tc-drop-down a, .tc-drop-down button {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    padding: 8px 15px !important;
+  }
 }
 
 .tc-search-results {

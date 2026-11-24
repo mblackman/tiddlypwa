@@ -47,3 +47,20 @@ Deno.test('QR Code: handles instant-unlock key in fragment', () => {
 	assertMatch(svg, /<svg/);
 	assertMatch(svg, /<\/svg>/);
 });
+
+Deno.test('QR Code: SVG includes explicit dimensions and QR container sizes to full width', () => {
+	const pairUrl = 'https://myserver.example.com/a1b2c3d4e5f6g7h8i9j0k/app.html#token=test';
+	const svg = generateQRCodeSvg(pairUrl, { margin: 2, ecLevel: 'L' });
+	assertMatch(svg, /<svg[^>]*\bwidth="\d+"/);
+	assertMatch(svg, /<svg[^>]*\bheight="\d+"/);
+
+	const styleCss = Deno.readTextFileSync(new URL('../plugins/tiddlypwa/style.css', import.meta.url));
+	assertMatch(
+		styleCss,
+		/\.tiddlypwa-qr-mat\s*\{[^}]*display:\s*block;[^}]*inline-size:\s*100%;/,
+	);
+
+	const mainJs = Deno.readTextFileSync(new URL('../plugins/tiddlypwa/main.js', import.meta.url));
+	const reflectBlock = mainJs.match(/async reflectSyncServers\([\s\S]*?\n\t\t\}/)?.[0] ?? '';
+	assertMatch(reflectBlock, /await this\.updatePairUrl\(\);/);
+});

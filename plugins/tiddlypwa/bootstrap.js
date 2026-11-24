@@ -233,10 +233,48 @@ Formatted with `deno fmt`.
 		}
 
 		form = dm('form', { class: 'tiddlypwa-form' });
-		passLbl = dm('label', { innerHTML: 'Password' });
-		passInput = dm('input', { attributes: { type: 'password', name: 'password', autocomplete: 'current-password' } });
+		passLbl = dm('label', { attributes: { for: 'tiddlypwa-password' }, text: 'Password' });
+		passInput = dm('input', {
+			attributes: {
+				id: 'tiddlypwa-password',
+				type: 'password',
+				name: 'password',
+				autocomplete: 'current-password',
+				spellcheck: 'false',
+				enterkeyhint: 'done',
+			},
+		});
+		confirmLbl = null;
+		confirmInput = null;
+		saltInput = null;
+		saltValidator = null;
+		isFresh = false;
 		submit = dm('button', { class: 'tiddlypwa-btn-primary', attributes: { type: 'submit' }, text: 'Log in' });
 		feedback = dm('div', {});
+
+		makePasswordField(inputEl) {
+			inputEl.required = true;
+			const wrap = dm('div', { class: 'tiddlypwa-password-wrap' });
+			const toggleBtn = dm('button', {
+				class: 'tiddlypwa-password-toggle',
+				attributes: {
+					type: 'button',
+					'aria-pressed': 'false',
+					'aria-label': 'Show password',
+				},
+				text: 'Show',
+			});
+			toggleBtn.addEventListener('click', () => {
+				const reveal = inputEl.type === 'password';
+				inputEl.type = reveal ? 'text' : 'password';
+				toggleBtn.setAttribute('aria-pressed', reveal ? 'true' : 'false');
+				toggleBtn.setAttribute('aria-label', reveal ? 'Hide password' : 'Show password');
+				toggleBtn.textContent = reveal ? 'Hide' : 'Show';
+			});
+			wrap.appendChild(inputEl);
+			wrap.appendChild(toggleBtn);
+			return wrap;
+		}
 
 		biometricBox = null;
 		showBiometricPrompt(onBiometricClick, onPasswordFallbackClick) {
@@ -303,8 +341,30 @@ Formatted with `deno fmt`.
 		}
 
 		setFresh() {
+			this.isFresh = true;
 			this.passInput.setAttribute('autocomplete', 'new-password');
+			this.passInput.setAttribute('enterkeyhint', 'next');
+			if (!this.confirmInput) {
+				this.confirmLbl = dm('label', {
+					attributes: { for: 'tiddlypwa-password-confirm' },
+					text: 'Confirm password',
+				});
+				this.confirmInput = dm('input', {
+					attributes: {
+						id: 'tiddlypwa-password-confirm',
+						type: 'password',
+						name: 'new-password-confirm',
+						autocomplete: 'new-password',
+						spellcheck: 'false',
+						enterkeyhint: 'done',
+					},
+				});
+			}
 			this.submit.textContent = 'Create & Encrypt Wiki';
+		}
+
+		setSaltValidator(fn) {
+			this.saltValidator = fn;
 		}
 
 		showForm(empty) {
@@ -313,8 +373,12 @@ Formatted with `deno fmt`.
 			this.showModal();
 			if (!empty) {
 				this.setInputsEnabled(false);
-				this.passLbl.appendChild(this.passInput);
+				this.passLbl.appendChild(this.makePasswordField(this.passInput));
 				this.form.appendChild(this.passLbl);
+				if (this.isFresh && this.confirmLbl && this.confirmInput) {
+					this.confirmLbl.appendChild(this.makePasswordField(this.confirmInput));
+					this.form.appendChild(this.confirmLbl);
+				}
 				this.form.appendChild(this.submit);
 			}
 			this.form.appendChild(this.feedback);
@@ -335,6 +399,21 @@ Formatted with `deno fmt`.
 			return new Promise((resolve) => {
 				this.form.onsubmit = (e) => {
 					e.preventDefault();
+					if (this.isFresh && this.confirmInput && this.passInput.value !== this.confirmInput.value) {
+						this.setFeedback(
+							'<p class="tiddlypwa-form-error">Passwords do not match. Please enter the same password in both fields.</p>',
+						);
+						this.confirmInput.focus();
+						return;
+					}
+					if (this.saltValidator) {
+						const saltErr = this.saltValidator(this.saltInput ? this.saltInput.value : '');
+						if (saltErr) {
+							this.setFeedback(`<p class="tiddlypwa-form-error">${$tw.utils.htmlEncode(saltErr)}</p>`);
+							this.saltInput?.focus();
+							return;
+						}
+					}
 					this.setInputsEnabled(false);
 					resolve(this.passInput.value);
 				};
@@ -342,9 +421,19 @@ Formatted with `deno fmt`.
 		}
 
 		addTokenInput(handlerFunction, initialValue, isPaired = false) {
-			const tokLbl = dm('label', { text: isPaired ? 'Sync token (configured from pairing link)' : 'Sync token' });
+			const tokLbl = dm('label', {
+				attributes: { for: 'tiddlypwa-sync-token' },
+				text: isPaired ? 'Sync token (configured from pairing link)' : 'Sync token',
+			});
 			const input = dm('input', {
-				attributes: { type: 'text', name: 'username', autocomplete: 'username' },
+				attributes: {
+					id: 'tiddlypwa-sync-token',
+					type: 'text',
+					name: 'username',
+					autocomplete: 'username',
+					spellcheck: 'false',
+					enterkeyhint: 'next',
+				},
 				eventListeners: [{ name: 'change', handlerFunction }, { name: 'input', handlerFunction }],
 			});
 			if (initialValue) {
@@ -365,11 +454,19 @@ Formatted with `deno fmt`.
 					<p>Copy the salt from the <strong>Settings</strong> → <strong>Storage and Sync</strong> page on the existing wiki, or from the sync admin interface.</p>
 				`,
 			});
-			const saltLbl = dm('label', { text: 'Salt' });
-			saltLbl.appendChild(dm('input', {
-				attributes: { type: 'text', name: 'salt', autocomplete: 'off' },
-				eventListeners: [{ name: 'change', handlerFunction }],
-			}));
+			const saltLbl = dm('label', { attributes: { for: 'tiddlypwa-salt' }, text: 'Salt' });
+			this.saltInput = dm('input', {
+				attributes: {
+					id: 'tiddlypwa-salt',
+					type: 'text',
+					name: 'salt',
+					autocomplete: 'off',
+					spellcheck: 'false',
+					enterkeyhint: 'done',
+				},
+				eventListeners: [{ name: 'change', handlerFunction }, { name: 'input', handlerFunction }],
+			});
+			saltLbl.appendChild(this.saltInput);
 			saltDtl.appendChild(saltLbl);
 			this.form.appendChild(saltDtl);
 		}
