@@ -772,6 +772,9 @@ Deno.test('P1-6: admin authentication rate-limits repeated failed attempts per I
 		new SQLiteDatastore(),
 		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
 		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+		'',
+		undefined,
+		{ trustProxy: true },
 	);
 	const badReq = (ip: string, atoken = 'wrong') =>
 		rlApp.handle(
@@ -1008,4 +1011,144 @@ Deno.test('Batch 2 reauth & auth validation: reauth clears salt/watcher_pubkey/w
 	);
 	assertEquals(bootAfter.state, 'existing');
 	assertEquals(bootAfter.salt, 'c2FsdDI=');
+});
+
+Deno.test('Batch 3 auth & proxy: trustProxy rightmost XFF, malformed hash safety, list authcode omission, monitor auth & ticket', async () => {
+	// 1. Default trustProxy=false ignores spoofed X-Forwarded-For
+	const directApp = new TiddlyPWASyncApp(
+		new SQLiteDatastore(),
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	for (let i = 0; i < 5; i++) {
+		const res = await directApp.handle(
+			new Request('http://example.com/tid.dly', {
+				method: 'POST',
+				headers: { 'x-forwarded-for': `203.0.113.${i + 1}` },
+				body: JSON.stringify({ tiddlypwa: 1, op: 'list', atoken: 'wrong' }),
+			}),
+		);
+		assertEquals(res.status, 401);
+	}
+	const directBlocked = await directApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			headers: { 'x-forwarded-for': '203.0.113.99' },
+			body: JSON.stringify({ tiddlypwa: 1, op: 'list', atoken: 'wrong' }),
+		}),
+	);
+	assertEquals(directBlocked.status, 429);
+
+	// 2. trustProxy=true uses rightmost X-Forwarded-For entry (cannot bypass by prepending spoofed IPs)
+	const proxyApp = new TiddlyPWASyncApp(
+		new SQLiteDatastore(),
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+		'',
+		undefined,
+		{ trustProxy: true },
+	);
+	for (let i = 0; i < 5; i++) {
+		const res = await proxyApp.handle(
+			new Request('http://example.com/tid.dly', {
+				method: 'POST',
+				headers: { 'x-forwarded-for': `198.51.100.${i + 1}, 203.0.113.50` },
+				body: JSON.stringify({ tiddlypwa: 1, op: 'list', atoken: 'wrong' }),
+			}),
+		);
+		assertEquals(res.status, 401);
+	}
+	const proxyBlocked = await proxyApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			headers: { 'x-forwarded-for': '198.51.100.250, 203.0.113.50' },
+			body: JSON.stringify({ tiddlypwa: 1, op: 'list', atoken: 'wrong' }),
+		}),
+	);
+	assertEquals(proxyBlocked.status, 429);
+
+	// 3. Malformed admin hash length fails cleanly with 401 instead of throwing
+	const badHashApp = new TiddlyPWASyncApp(new SQLiteDatastore(), 'dGVzdHNhbHQ=', 'AQID');
+	const badHashRes = await badHashApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'list', atoken: 'test' }),
+		}),
+	);
+	assertEquals(badHashRes.status, 401);
+
+	// 4. op: 'list' does not leak authcode
+	const listApp = new TiddlyPWASyncApp(
+		new SQLiteDatastore(),
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const { token } = await listApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'create', atoken: 'test' }),
+		}),
+	).then((r) => r.json());
+	await listApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token,
+				authcode: 'super-secret-authcode',
+				salt: 'c2FsdA==',
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [],
+			}),
+		}),
+	).then((r) => r.json());
+
+	const listRes = await listApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'list', atoken: 'test' }),
+		}),
+	).then((r) => r.json());
+	assertEquals(listRes.wikis.length, 1);
+	assertEquals(listRes.wikis[0].authcode, undefined);
+	assertEquals(listRes.wikis[0].hasAuthcode, true);
+
+	// 5. Monitor requires authcode once wiki.authcode is set, and single-use monitor_ticket works
+	const unauthTokenMon = listApp.handleMonitor(new URLSearchParams({ token, browserToken: 'b1' }), 20);
+	assertEquals(unauthTokenMon.status, 401);
+
+	const wrongAuthMon = listApp.handleMonitor(
+		new URLSearchParams({ token, authcode: 'wrong', browserToken: 'b1' }),
+		20,
+	);
+	assertEquals(wrongAuthMon.status, 401);
+
+	const ticketResp = await listApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'monitor_ticket',
+				token,
+				authcode: 'super-secret-authcode',
+				browserToken: 'b1',
+			}),
+		}),
+	);
+	assertEquals(ticketResp.status, 200);
+	const { ticket } = await ticketResp.json();
+	assertEquals(typeof ticket, 'string');
+
+	const monOk = listApp.handleMonitor(new URLSearchParams({ ticket, browserToken: 'b1' }), 20);
+	assertEquals(monOk.status, 200);
+	const reader = monOk.body!.getReader();
+	const chunk = new TextDecoder().decode((await reader.read()).value);
+	assertEquals(chunk.includes('event: hi'), true);
+	await reader.cancel();
+
+	// Reusing the same single-use ticket must be rejected
+	const replayMon = listApp.handleMonitor(new URLSearchParams({ ticket, browserToken: 'b1' }), 20);
+	assertEquals(replayMon.status, 401);
 });

@@ -1,7 +1,7 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { brotliCompress, constants as zlibConstants } from 'node:zlib';
 import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url';
 import { decodeBase64, encodeBase64 } from '@std/encoding/base64';
-import * as argon from 'argon2ian';
 import * as brotli from 'brotli';
 import { renderHomePage } from './pages.ts';
 import { Datastore, Tiddler, Wiki } from './data.d.ts';
@@ -36,11 +36,18 @@ function route(methods: string[], pathname: string, skipIf?: (groups: Record<str
 }
 
 function adminAuth(orig: any, _context: ClassMethodDecoratorContext) {
-	return function (this: any, data: Record<string, unknown>) {
+	return async function (this: any, data: Record<string, unknown>) {
 		if (typeof data.atoken !== 'string') {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (!(this as TiddlyPWASyncApp).adminPasswordCorrect(data.atoken)) {
+		const app = this as TiddlyPWASyncApp;
+		if (app.isAdminVerifySaturated()) {
+			return Response.json(
+				{ error: 'ERATELIMIT' },
+				{ headers: { ...respHdrs, 'retry-after': '1' }, status: 429 },
+			);
+		}
+		if (!(await app.adminPasswordCorrect(data.atoken))) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 		return orig.apply(this, [data]);
@@ -72,14 +79,9 @@ function stripWeak(x: string | null) {
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
-	const ab = utfenc.encode(a);
-	const bb = utfenc.encode(b);
-	const len = Math.max(ab.length, bb.length);
-	let diff = ab.length ^ bb.length;
-	for (let i = 0; i < len; i++) {
-		diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
-	}
-	return diff === 0;
+	const da = createHash('sha256').update(a).digest();
+	const db = createHash('sha256').update(b).digest();
+	return timingSafeEqual(da, db) && a.length === b.length;
 }
 
 function isValidAuthcode(authcode: unknown): authcode is string {
@@ -115,7 +117,10 @@ const ALLOWED_APP_FILENAMES: Record<string, string> = {
 
 const ADMIN_OPS = new Set(['list', 'create', 'delete', 'reauth', 'resetapp', 'resetallapps']);
 const ADMIN_RATE_LIMIT_MAX = 5;
+const ADMIN_GLOBAL_RATE_LIMIT_MAX = 30;
 const ADMIN_RATE_LIMIT_WINDOW_MS = 60_000;
+const ADMIN_FAILURES_MAX_KEYS = 4096;
+const ADMIN_VERIFY_MAX_INFLIGHT = 4;
 
 export class TiddlyPWASyncApp {
 	db: Datastore;
@@ -124,6 +129,7 @@ export class TiddlyPWASyncApp {
 	basepath: string;
 	vapidSubject: string;
 	allowCustomAppUpload: boolean;
+	trustProxy: boolean;
 	defaultAppVersion = '5.4.1';
 	vapidKeys?: VapidKeys;
 	pushFetchFn?: typeof fetch;
@@ -131,6 +137,9 @@ export class TiddlyPWASyncApp {
 	resolveDnsFn?: DnsResolverFn;
 	watcherTimeoutMs?: number;
 	#adminFailures: Map<string, { count: number; resetAt: number }> = new Map();
+	#adminGlobalFailures: { count: number; resetAt: number } = { count: 0, resetAt: 0 };
+	#adminVerifyInFlight = 0;
+	#monitorTickets: Map<string, { token: string; browserToken: string; expiresAt: number }> = new Map();
 
 	constructor(
 		db: Datastore,
@@ -138,7 +147,7 @@ export class TiddlyPWASyncApp {
 		adminpwhash: string,
 		basepath: string = '',
 		vapidSubject: string = 'mailto:noreply@example.com',
-		options?: { allowCustomAppUpload?: boolean },
+		options?: { allowCustomAppUpload?: boolean; trustProxy?: boolean },
 	) {
 		this.db = db;
 		this.adminpwsalt = decodeBase64Url(adminpwsalt);
@@ -146,6 +155,7 @@ export class TiddlyPWASyncApp {
 		this.basepath = basepath.endsWith('/') ? basepath.slice(0, -1) : basepath;
 		this.vapidSubject = vapidSubject;
 		this.allowCustomAppUpload = options?.allowCustomAppUpload ?? false;
+		this.trustProxy = options?.trustProxy ?? false;
 	}
 
 	async ensureVapidKeys(): Promise<VapidKeys> {
@@ -282,9 +292,64 @@ export class TiddlyPWASyncApp {
 		}
 	}
 
-	adminPasswordCorrect(atoken: string) {
-		if (this.adminpwsalt.length === 0 || this.adminpwhash.length === 0) return false;
-		return argon.verify(utfenc.encode(atoken), this.adminpwsalt, this.adminpwhash);
+	isAdminVerifySaturated(): boolean {
+		return this.#adminVerifyInFlight >= ADMIN_VERIFY_MAX_INFLIGHT;
+	}
+
+	async adminPasswordCorrect(atoken: string): Promise<boolean> {
+		if (
+			this.adminpwsalt.length < 8 ||
+			(this.adminpwhash.length !== 32 && this.adminpwhash.length !== 64)
+		) {
+			return false;
+		}
+		this.#adminVerifyInFlight++;
+		let worker: Worker | null = null;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			worker = new Worker(new URL('./argon_worker.ts', import.meta.url).href, {
+				type: 'module',
+				deno: { permissions: 'none' },
+			});
+			const w = worker;
+			const payload = {
+				pw: utfenc.encode(atoken),
+				salt: this.adminpwsalt,
+				hash: this.adminpwhash,
+			};
+			return await new Promise<boolean>((resolve) => {
+				let settled = false;
+				const done = (ok: boolean) => {
+					if (settled) return;
+					settled = true;
+					if (timer !== undefined) clearTimeout(timer);
+					resolve(ok);
+				};
+				timer = setTimeout(() => done(false), 5000);
+				w.onerror = (evt) => {
+					evt.preventDefault?.();
+					done(false);
+				};
+				w.onmessage = (evt) => {
+					const msg = evt.data as { ready?: boolean; ok?: boolean } | null;
+					if (msg?.ready) {
+						w.postMessage(payload);
+						return;
+					}
+					done(Boolean(msg?.ok));
+				};
+			});
+		} catch (_e) {
+			return false;
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+			try {
+				worker?.terminate();
+			} catch (_e) {
+				// ignore
+			}
+			this.#adminVerifyInFlight--;
+		}
 	}
 
 	@getWiki('EAUTH')
@@ -480,12 +545,12 @@ export class TiddlyPWASyncApp {
 	}
 
 	@adminAuth
-	handleList(_: unknown) {
+	handleList(_: unknown): Response | Promise<Response> {
 		return Response.json({ wikis: this.db.listWikis() }, { headers: respHdrs, status: 200 });
 	}
 
 	@adminAuth
-	handleCreate({ note }: Record<string, unknown>) {
+	handleCreate({ note }: Record<string, unknown>): Response | Promise<Response> {
 		if (note !== undefined && typeof note !== 'string') {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
@@ -496,14 +561,14 @@ export class TiddlyPWASyncApp {
 
 	@adminAuth
 	@getWiki('EEXIST')
-	handleDelete({ token }: Record<string, unknown>) {
+	handleDelete({ token }: Record<string, unknown>): Response | Promise<Response> {
 		this.db.deleteWiki(token as string);
 		return Response.json({}, { headers: respHdrs, status: 200 });
 	}
 
 	@adminAuth
 	@getWiki('EEXIST')
-	handleReauth({ token }: Record<string, unknown>) {
+	handleReauth({ token }: Record<string, unknown>): Response | Promise<Response> {
 		this.db.clearWikiAuth(token as string);
 		return Response.json({}, { headers: respHdrs, status: 200 });
 	}
@@ -798,7 +863,7 @@ export class TiddlyPWASyncApp {
 			} catch (_e) {
 				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 			}
-			if (existingPubKey && existingPubKey !== watcherPubKey) {
+			if (existingPubKey && !constantTimeEqual(existingPubKey, watcherPubKey)) {
 				return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 			}
 		}
@@ -922,8 +987,8 @@ export class TiddlyPWASyncApp {
 			if (freshWiki.watcher_pubkey) {
 				if (
 					(typeof watcherPubKey === 'string' && watcherPubKey.length > 0 &&
-						freshWiki.watcher_pubkey !== watcherPubKey) ||
-					freshWiki.watcher_pubkey !== effectivePubKey
+						!constantTimeEqual(freshWiki.watcher_pubkey, watcherPubKey)) ||
+					!constantTimeEqual(freshWiki.watcher_pubkey, effectivePubKey)
 				) {
 					authFailed = true;
 					return;
@@ -1063,7 +1128,7 @@ export class TiddlyPWASyncApp {
 
 	@adminAuth
 	@getWiki('EEXIST')
-	handleResetApp({ token }: Record<string, unknown>) {
+	handleResetApp({ token }: Record<string, unknown>): Response | Promise<Response> {
 		this.db.dissociateFiles(token as string);
 		return Response.json({}, { headers: respHdrs, status: 200 });
 	}
@@ -1082,16 +1147,32 @@ export class TiddlyPWASyncApp {
 	}
 
 	#getClientIp(req: Request, info?: Deno.ServeHandlerInfo): string {
-		const fwd = req.headers.get('x-forwarded-for')?.split(',')[0].trim();
-		if (fwd) return fwd;
-		const cf = req.headers.get('cf-connecting-ip')?.trim();
-		if (cf) return cf;
+		if (this.trustProxy) {
+			const xff = req.headers.get('x-forwarded-for');
+			if (xff) {
+				const parts = xff.split(',').map((s) => s.trim()).filter(Boolean);
+				if (parts.length > 0) return parts[parts.length - 1].slice(0, 64);
+			}
+			const xRealIp = req.headers.get('x-real-ip')?.trim();
+			if (xRealIp) return xRealIp.slice(0, 64);
+			const cf = req.headers.get('cf-connecting-ip')?.trim();
+			if (cf) return cf.slice(0, 64);
+		}
 		const remote = info?.remoteAddr as Deno.NetAddr | undefined;
-		return remote?.hostname || 'local';
+		return (remote?.hostname || 'local').slice(0, 64);
 	}
 
 	#checkAdminRateLimit(clientIp: string): Response | null {
 		const now = Date.now();
+		if (this.#adminGlobalFailures.resetAt <= now) {
+			this.#adminGlobalFailures = { count: 0, resetAt: 0 };
+		} else if (this.#adminGlobalFailures.count >= ADMIN_GLOBAL_RATE_LIMIT_MAX) {
+			const retryAfter = String(Math.max(1, Math.ceil((this.#adminGlobalFailures.resetAt - now) / 1000)));
+			return Response.json(
+				{ error: 'ERATELIMIT' },
+				{ headers: { ...respHdrs, 'retry-after': retryAfter }, status: 429 },
+			);
+		}
 		const entry = this.#adminFailures.get(clientIp);
 		if (!entry) return null;
 		if (entry.resetAt <= now) {
@@ -1114,9 +1195,18 @@ export class TiddlyPWASyncApp {
 			this.#adminFailures.delete(clientIp);
 			return;
 		}
-		if (this.#adminFailures.size > 1000) {
+		if (this.#adminGlobalFailures.resetAt <= now) {
+			this.#adminGlobalFailures = { count: 1, resetAt: now + ADMIN_RATE_LIMIT_WINDOW_MS };
+		} else {
+			this.#adminGlobalFailures.count++;
+		}
+		if (!this.#adminFailures.has(clientIp) && this.#adminFailures.size >= ADMIN_FAILURES_MAX_KEYS) {
 			for (const [k, v] of this.#adminFailures) {
 				if (v.resetAt <= now) this.#adminFailures.delete(k);
+			}
+			if (this.#adminFailures.size >= ADMIN_FAILURES_MAX_KEYS) {
+				const oldest = this.#adminFailures.keys().next().value;
+				if (oldest !== undefined) this.#adminFailures.delete(oldest);
 			}
 		}
 		const prev = this.#adminFailures.get(clientIp);
@@ -1128,7 +1218,7 @@ export class TiddlyPWASyncApp {
 	}
 
 	@adminAuth
-	handleResetAllApps(_: unknown) {
+	handleResetAllApps(_: unknown): Response | Promise<Response> {
 		this.db.dissociateAllFiles();
 		return Response.json({}, { headers: respHdrs, status: 200 });
 	}
@@ -1202,17 +1292,59 @@ export class TiddlyPWASyncApp {
 		return Response.json({ urlprefix: token.slice(0, token.length / 2) + '/' }, { headers: respHdrs, status: 200 });
 	}
 
+	@getWiki('EAUTH')
+	handleMonitorTicket({ wiki, token, authcode, browserToken }: Record<string, unknown>) {
+		if (
+			typeof token !== 'string' || !isValidAuthcode(authcode) ||
+			typeof browserToken !== 'string' || browserToken.length === 0 || browserToken.length > 128
+		) {
+			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+		}
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
+			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
+		}
+		const now = Date.now();
+		if (this.#monitorTickets.size >= 1000) {
+			for (const [k, v] of this.#monitorTickets) {
+				if (v.expiresAt <= now) this.#monitorTickets.delete(k);
+			}
+			if (this.#monitorTickets.size >= 1000) {
+				const oldest = this.#monitorTickets.keys().next().value;
+				if (oldest !== undefined) this.#monitorTickets.delete(oldest);
+			}
+		}
+		const ticket = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+		this.#monitorTickets.set(ticket, { token, browserToken, expiresAt: now + 30_000 });
+		return Response.json({ ticket }, { headers: { ...respHdrs, 'cache-control': 'no-store' }, status: 200 });
+	}
+
 	handleMonitor(query: URLSearchParams, pingIntervalMs = 25000) {
 		const token = query.get('token');
 		const halftoken = query.get('halftoken');
 		const authcode = query.get('authcode');
+		const ticket = query.get('ticket');
 		const browserToken = query.get('browserToken');
-		if (!browserToken || (!token && !halftoken)) {
+		if (!browserToken || (!token && !halftoken && !ticket)) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
 		let wikiToken: string;
-		if (token) {
-			if (!this.db.getWiki(token)) {
+		if (ticket) {
+			const entry = this.#monitorTickets.get(ticket);
+			this.#monitorTickets.delete(ticket);
+			if (
+				!entry || entry.expiresAt <= Date.now() ||
+				!constantTimeEqual(entry.browserToken, browserToken) ||
+				!this.db.getWiki(entry.token)
+			) {
+				return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
+			}
+			wikiToken = entry.token;
+		} else if (token) {
+			const wiki = this.db.getWiki(token);
+			if (!wiki) {
+				return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
+			}
+			if (wiki.authcode && (!authcode || !constantTimeEqual(authcode, wiki.authcode))) {
 				return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 			}
 			wikiToken = token;
@@ -1366,21 +1498,22 @@ export class TiddlyPWASyncApp {
 				const blocked = this.#checkAdminRateLimit(clientIp);
 				if (blocked) return blocked;
 				let resp: Response;
-				if (data.op === 'list') resp = this.handleList(data);
-				else if (data.op === 'create') resp = this.handleCreate(data);
-				else if (data.op === 'delete') resp = this.handleDelete(data);
-				else if (data.op === 'reauth') resp = this.handleReauth(data);
-				else if (data.op === 'resetapp') resp = this.handleResetApp(data);
-				else resp = this.handleResetAllApps(data);
+				if (data.op === 'list') resp = await this.handleList(data);
+				else if (data.op === 'create') resp = await this.handleCreate(data);
+				else if (data.op === 'delete') resp = await this.handleDelete(data);
+				else if (data.op === 'reauth') resp = await this.handleReauth(data);
+				else if (data.op === 'resetapp') resp = await this.handleResetApp(data);
+				else resp = await this.handleResetAllApps(data);
 				if (resp.status === 401) {
 					this.#recordAdminAttempt(clientIp, true);
-				} else if (resp.status !== 400) {
+				} else if (resp.status !== 400 && resp.status !== 429) {
 					this.#recordAdminAttempt(clientIp, false);
 				}
 				return resp;
 			}
 			if (data.op === 'sync') return this.handleSync(data, req.headers);
 			if (data.op === 'verify_auth') return this.handleVerifyAuth(data);
+			if (data.op === 'monitor_ticket') return this.handleMonitorTicket(data);
 			if (data.op === 'uploadapp') return await this.handleUploadApp(data);
 			if (data.op === 'push_info') return await this.handlePushInfo(data);
 			if (data.op === 'push_subscribe') return await this.handlePushSubscribe(data);

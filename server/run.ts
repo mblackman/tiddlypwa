@@ -1,5 +1,6 @@
 import * as dotenv from '@std/dotenv';
 import { parseArgs } from '@std/cli/parse-args';
+import { decodeBase64Url } from '@std/encoding/base64url';
 import { SQLiteDatastore } from './sqlite.ts';
 import { TiddlyPWASyncApp } from './app.ts';
 import { startSchedulerLoop } from './scheduler.ts';
@@ -14,6 +15,21 @@ export async function listen(args: any) {
 		console.error('Generate them using: deno run --allow-env server/hash-admin-password.ts');
 		Deno.exit(1);
 	}
+	let saltBytes: Uint8Array;
+	let hashBytes: Uint8Array;
+	try {
+		saltBytes = decodeBase64Url(adminpwsalt);
+		hashBytes = decodeBase64Url(adminpwhash);
+	} catch (_e) {
+		console.error('Error: ADMIN_PASSWORD_HASH and ADMIN_PASSWORD_SALT must be valid Base64URL.');
+		Deno.exit(1);
+	}
+	if (saltBytes.byteLength < 16 || (hashBytes.byteLength !== 32 && hashBytes.byteLength !== 64)) {
+		console.error(
+			'Error: ADMIN_PASSWORD_SALT must decode to >= 16 bytes and ADMIN_PASSWORD_HASH to 32 or 64 bytes.',
+		);
+		Deno.exit(1);
+	}
 	const basepath = args.basepath ?? envvar('BASE_PATH') ?? '';
 	const vapidSubject = args.vapidsubject ?? envvar('VAPID_SUBJECT') ?? 'mailto:noreply@example.com';
 	const dbPath = args.db ?? envvar('DB_PATH') ?? '.data/tiddly.db';
@@ -26,9 +42,11 @@ export async function listen(args: any) {
 		}
 	}
 	const allowCustomAppUpload = envvar('ALLOW_CUSTOM_APP_UPLOAD') === 'true';
+	const trustProxy = envvar('TRUST_PROXY') === 'true';
 	const db = new SQLiteDatastore(dbPath);
 	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath, vapidSubject, {
 		allowCustomAppUpload,
+		trustProxy,
 	});
 	await app.ensureVapidKeys();
 	await app.loadDefaultApp();

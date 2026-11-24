@@ -8,6 +8,16 @@ export type Wiki = {
 	last_mtime?: number;
 };
 
+export type WikiSummary = {
+	token: string;
+	hasAuthcode: boolean;
+	salt?: string;
+	note?: string;
+	watcher_pubkey?: string;
+	tidsize: number;
+	appsize: number;
+};
+
 export type File = {
 	etag: Uint8Array;
 	rawsize: number;
@@ -73,7 +83,7 @@ export interface Datastore {
 	setServerConfig(key: string, value: string): void;
 	getWiki(token: string): Wiki | undefined;
 	getWikiByPrefix(halftoken: string): Wiki | undefined;
-	listWikis(): Array<Wiki>;
+	listWikis(): Array<WikiSummary>;
 	createWiki(token: string, note?: string): void;
 	updateWikiAuthcode(token: string, authcode?: string | null): void;
 	updateWikiSalt(token: string, salt: string): void;

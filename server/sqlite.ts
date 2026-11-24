@@ -8,6 +8,7 @@ import {
 	Tiddler,
 	WatcherModuleRow,
 	Wiki,
+	WikiSummary,
 } from './data.d.ts';
 
 const sql = String.raw; // For tools/editors
@@ -392,11 +393,11 @@ export class SQLiteDatastore implements Datastore {
 		return row ? { ...row } : undefined;
 	}
 
-	listWikis() {
+	listWikis(): Array<WikiSummary> {
 		return this.queryEntries<
 			{
 				token: string;
-				authcode?: string;
+				hasAuthcode: number;
 				salt?: string;
 				note?: string;
 				watcher_pubkey?: string;
@@ -404,14 +405,14 @@ export class SQLiteDatastore implements Datastore {
 				appsize: number;
 			}
 		>(sql`
-			SELECT token, authcode, salt, note, watcher_pubkey, (
+			SELECT token, (authcode IS NOT NULL) AS hasAuthcode, salt, note, watcher_pubkey, (
 				SELECT sum(length(thash) + length(iv) + length(ct) + length(sbiv) + length(sbct))
 				FROM tiddlers
 				WHERE tiddlers.token = wikis.token
 			) AS tidsize, (
 				SELECT sum(length(body)) FROM files, wikifiles WHERE files.etag = wikifiles.etag AND wikifiles.token = wikis.token
 			) AS appsize FROM wikis
-		`);
+		`).map((r) => ({ ...r, hasAuthcode: Boolean(r.hasAuthcode) }));
 	}
 
 	createWiki(token: string, note?: string) {
