@@ -78,6 +78,9 @@ Deno.test('SSRF IP validator blocks loopback, RFC1918, metadata, CGNAT, and IPv6
 	assert(isBlockedIp('fd12:3456:789a::1'));
 	assert(isBlockedIp('fe80::1'));
 	assert(isBlockedIp('ff02::1'));
+	assert(isBlockedIp('2002:7f00:0001::1')); // 6to4
+	assert(isBlockedIp('2001:0000::1')); // Teredo
+	assert(isBlockedIp('100::1')); // Discard-Only RFC 6666
 
 	// Allowed public IPv6
 	assert(!isBlockedIp('2606:2800:220:1:248:1893:25c8:1946'));

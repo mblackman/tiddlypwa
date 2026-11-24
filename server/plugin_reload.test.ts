@@ -232,6 +232,9 @@ Deno.test('Plugin Upgrade Flow: unpacking before uploadAppWiki updates shadow ti
 		db,
 		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
 		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+		'',
+		undefined,
+		{ allowCustomAppUpload: true },
 	);
 	await app.loadDefaultApp();
 
@@ -381,6 +384,9 @@ Deno.test('Server upgradeStoredWikiCorePlugins: upgrades outdated tiddlypwa in c
 		db,
 		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
 		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+		'',
+		undefined,
+		{ allowCustomAppUpload: true },
 	);
 	await app.loadDefaultApp();
 

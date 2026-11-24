@@ -11,6 +11,7 @@ import {
 	computeCodeHash,
 	DnsResolverFn,
 	executeWatcherModule,
+	validatePublicEndpointUrl,
 	verifyWatcherSignature,
 	WatchedItem,
 } from './watcher_runner.ts';
@@ -140,7 +141,7 @@ export class TiddlyPWASyncApp {
 		this.adminpwhash = decodeBase64Url(adminpwhash);
 		this.basepath = basepath.endsWith('/') ? basepath.slice(0, -1) : basepath;
 		this.vapidSubject = vapidSubject;
-		this.allowCustomAppUpload = options?.allowCustomAppUpload ?? true;
+		this.allowCustomAppUpload = options?.allowCustomAppUpload ?? false;
 	}
 
 	async ensureVapidKeys(): Promise<VapidKeys> {
@@ -547,10 +548,10 @@ export class TiddlyPWASyncApp {
 		const p256dh = keys.p256dh;
 		const auth = keys.auth;
 		try {
-			const parsedEndpoint = new URL(endpoint);
-			if (parsedEndpoint.protocol !== 'https:' && parsedEndpoint.protocol !== 'http:') {
-				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
-			}
+			await validatePublicEndpointUrl(endpoint, {
+				resolveDnsFn: this.resolveDnsFn,
+				skipDns: Boolean(this.pushFetchFn && !this.resolveDnsFn),
+			});
 			const p256dhBytes = decodeBase64Flexible(p256dh);
 			const authBytes = decodeBase64Flexible(auth);
 			if (p256dhBytes.byteLength !== 65 || p256dhBytes[0] !== 0x04 || authBytes.byteLength !== 16) {
@@ -642,6 +643,7 @@ export class TiddlyPWASyncApp {
 			targetEndpoint: typeof endpoint === 'string' ? endpoint : null,
 			subject: this.vapidSubject,
 			fetchFn: this.pushFetchFn,
+			resolveDnsFn: this.resolveDnsFn,
 		});
 		return Response.json({ ok: true, ...res }, { headers: respHdrs, status: 200 });
 	}
@@ -1131,10 +1133,12 @@ export class TiddlyPWASyncApp {
 				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 			}
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		const storedAuth = (wiki as Wiki).authcode;
+		if (storedAuth) {
+			if (typeof authcode !== 'string' || authcode.length === 0 || !constantTimeEqual(authcode, storedAuth)) {
+				return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
+			}
+		} else if (this.db.maxMtime(token) > 0 || Boolean((wiki as Wiki).salt)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 		const uploads = await Promise.all(
@@ -1261,7 +1265,7 @@ export class TiddlyPWASyncApp {
 				endpoint: this.basepath + '/tid.dly',
 				state: wiki.salt ? 'existing' : 'fresh',
 				salt: wiki.salt,
-			}, { headers: respHdrs });
+			}, { headers: { ...respHdrs, 'cache-control': 'no-store' } });
 		}
 		let file = this.db.getWikiFile(halftoken, filename);
 		if (!file) {
@@ -1287,6 +1291,7 @@ export class TiddlyPWASyncApp {
 			'x-content-type-options': 'nosniff',
 			'referrer-policy': 'no-referrer',
 			'x-frame-options': 'SAMEORIGIN',
+			'cross-origin-opener-policy': 'same-origin',
 		});
 		if (stripWeak(req.headers.get('if-none-match')) === etagstr) {
 			return new Response(null, { status: 304, headers });
@@ -1368,6 +1373,8 @@ export class TiddlyPWASyncApp {
 			'cache-control': 'no-cache',
 			'x-content-type-options': 'nosniff',
 			'x-frame-options': 'SAMEORIGIN',
+			'referrer-policy': 'no-referrer',
+			'cross-origin-opener-policy': 'same-origin',
 			'content-security-policy':
 				"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
 		});

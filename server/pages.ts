@@ -142,6 +142,8 @@ export function renderHomePage(defaultVersion = '5.4.1'): string {
 							const appsizeTd = document.createElement('td');
 							const appsizeA = document.createElement('a');
 							appsizeA.href = wikiLaunchUrl(token);
+							appsizeA.target = '_blank';
+							appsizeA.rel = 'noopener noreferrer';
 							if (appsize > 0) {
 								appsizeA.innerText = formatBytes(appsize) + ' (custom)';
 							} else {
@@ -153,7 +155,7 @@ export function renderHomePage(defaultVersion = '5.4.1'): string {
 							const btnOpen = document.createElement('button');
 							btnOpen.innerText = 'Open App';
 							btnOpen.onclick = () => {
-								window.open(wikiLaunchUrl(token), '_blank');
+								window.open(wikiLaunchUrl(token), '_blank', 'noopener,noreferrer');
 							};
 							btnsTd.appendChild(btnOpen);
 							const btnReauth = document.createElement('button');
@@ -233,7 +235,7 @@ export function renderHomePage(defaultVersion = '5.4.1'): string {
 									refreshBtn.click();
 									const data = await resp.json();
 									if (data && data.token) {
-										window.open(wikiLaunchUrl(data.token), '_blank');
+										window.open(wikiLaunchUrl(data.token), '_blank', 'noopener,noreferrer');
 									}
 								}
 							});

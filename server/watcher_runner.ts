@@ -253,6 +253,12 @@ export function isBlockedIp(ip: string): boolean {
 	if ((v6[0] & 0xff00) === 0xff00) return true;
 	// Documentation 2001:db8::/32
 	if (v6[0] === 0x2001 && v6[1] === 0x0db8) return true;
+	// 6to4 2002::/16 (deprecated IPv6 transition prefix)
+	if (v6[0] === 0x2002) return true;
+	// Teredo 2001:0000::/32
+	if (v6[0] === 0x2001 && v6[1] === 0x0000) return true;
+	// Discard-Only 100::/64 (RFC 6666)
+	if (v6[0] === 0x0100 && v6[1] === 0 && v6[2] === 0 && v6[3] === 0) return true;
 
 	return false;
 }
@@ -324,6 +330,55 @@ export async function validateUrlAgainstSsrf(
 ): Promise<URL> {
 	const { url } = await resolveAndValidateUrl(rawUrl, allowedHosts, resolveDnsFn);
 	return url;
+}
+
+export async function validatePublicEndpointUrl(
+	rawUrl: string,
+	options?: { allowHttp?: boolean; resolveDnsFn?: DnsResolverFn; skipDns?: boolean },
+): Promise<URL> {
+	let parsed: URL;
+	try {
+		parsed = new URL(rawUrl);
+	} catch (_e) {
+		throw new Error(`Invalid URL: ${rawUrl}`);
+	}
+	if (parsed.protocol !== 'https:' && !(options?.allowHttp && parsed.protocol === 'http:')) {
+		throw new Error(`Disallowed protocol "${parsed.protocol}"`);
+	}
+	if (parsed.username || parsed.password) {
+		throw new Error('Credentials are not allowed in endpoint URL');
+	}
+	const hostname = parsed.hostname.toLowerCase();
+	if (
+		!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') ||
+		hostname.endsWith('.local') || hostname.endsWith('.internal')
+	) {
+		throw new Error(`Disallowed host "${hostname}"`);
+	}
+	if (parseIpv4(hostname) || hostname.startsWith('[') || hostname.includes(':')) {
+		if (isBlockedIp(hostname)) {
+			throw new Error(`SSRF blocked IP address for host "${hostname}"`);
+		}
+		return parsed;
+	}
+	if (options?.skipDns) {
+		return parsed;
+	}
+	const resolveDnsFn = options?.resolveDnsFn ?? defaultResolveDns;
+	const [aRecords, aaaaRecords] = await Promise.all([
+		resolveDnsFn(hostname, 'A'),
+		resolveDnsFn(hostname, 'AAAA'),
+	]);
+	const allIps = [...aRecords, ...aaaaRecords];
+	if (allIps.length === 0) {
+		throw new Error(`DNS resolution returned no A/AAAA records for host "${hostname}"`);
+	}
+	for (const ip of allIps) {
+		if (isBlockedIp(ip)) {
+			throw new Error(`SSRF blocked resolved IP "${ip}" for host "${hostname}"`);
+		}
+	}
+	return parsed;
 }
 
 export async function safeHostFetch(

@@ -25,7 +25,7 @@ export async function listen(args: any) {
 			// directory may already exist or cannot be created
 		}
 	}
-	const allowCustomAppUpload = envvar('ALLOW_CUSTOM_APP_UPLOAD') !== 'false';
+	const allowCustomAppUpload = envvar('ALLOW_CUSTOM_APP_UPLOAD') === 'true';
 	const db = new SQLiteDatastore(dbPath);
 	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath, vapidSubject, {
 		allowCustomAppUpload,

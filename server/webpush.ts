@@ -1,8 +1,46 @@
 import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url';
 import { Datastore, PushSubscriptionRow } from './data.d.ts';
+import { DnsResolverFn, validatePublicEndpointUrl } from './watcher_runner.ts';
 
 const utfenc = new TextEncoder();
 const utfdec = new TextDecoder();
+
+async function readCappedText(body: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<string> {
+	if (!body) return '';
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (total < maxBytes) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (value && value.byteLength > 0) {
+				const take = Math.min(value.byteLength, maxBytes - total);
+				chunks.push(take === value.byteLength ? value : value.subarray(0, take));
+				total += take;
+				if (total >= maxBytes) {
+					await reader.cancel().catch(() => {});
+					break;
+				}
+			}
+		}
+	} catch (_e) {
+		// ignore read failures on error body
+	} finally {
+		try {
+			reader.releaseLock();
+		} catch (_e) {
+			// ignore
+		}
+	}
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return utfdec.decode(out);
+}
 
 export type VapidKeys = {
 	publicKeyB64Url: string;
@@ -335,8 +373,14 @@ export async function sendWebPushNotification(
 		ttlSeconds?: number;
 		urgency?: 'very-low' | 'low' | 'normal' | 'high';
 		fetchFn?: typeof fetch;
+		resolveDnsFn?: DnsResolverFn;
+		timeoutMs?: number;
 	} = {},
 ): Promise<PushDeliveryResult> {
+	const parsedEndpoint = await validatePublicEndpointUrl(sub.endpoint, {
+		resolveDnsFn: options.resolveDnsFn,
+		skipDns: Boolean(options.fetchFn && !options.resolveDnsFn),
+	});
 	const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
 	const body = await encryptWebPushPayload(payloadStr, sub.p256dh, sub.auth);
 	const { authorization } = await createVapidAuthHeader(
@@ -346,22 +390,34 @@ export async function sendWebPushNotification(
 	);
 
 	const fetchImpl = options.fetchFn ?? fetch;
-	const resp = await fetchImpl(sub.endpoint, {
-		method: 'POST',
-		headers: {
-			'Authorization': authorization,
-			'Content-Encoding': 'aes128gcm',
-			'Content-Type': 'application/octet-stream',
-			'Content-Length': body.byteLength.toString(),
-			'TTL': String(options.ttlSeconds ?? 86400),
-			'Urgency': options.urgency ?? 'normal',
-		},
-		body: body as unknown as BodyInit,
-	});
+	const timeoutMs = options.timeoutMs ?? 10_000;
+	const ac = new AbortController();
+	const timer = setTimeout(() => ac.abort(), timeoutMs);
+	let resp: Response;
+	try {
+		resp = await fetchImpl(sub.endpoint, {
+			method: 'POST',
+			headers: {
+				'Authorization': authorization,
+				'Content-Encoding': 'aes128gcm',
+				'Content-Type': 'application/octet-stream',
+				'Content-Length': body.byteLength.toString(),
+				'TTL': String(options.ttlSeconds ?? 86400),
+				'Urgency': options.urgency ?? 'normal',
+			},
+			body: body as unknown as BodyInit,
+			redirect: 'manual',
+			signal: ac.signal,
+		});
 
-	if (!resp.ok) {
-		const errText = await resp.text().catch(() => '');
-		console.warn(`Web Push delivery failed (${resp.status}) for ${sub.endpoint}: ${errText}`);
+		if (!resp.ok) {
+			const errText = await readCappedText(resp.body, 512);
+			console.warn(`Web Push delivery failed (${resp.status}) for ${parsedEndpoint.origin}: ${errText}`);
+		} else {
+			await resp.body?.cancel().catch(() => {});
+		}
+	} finally {
+		clearTimeout(timer);
 	}
 
 	const expired = resp.status === 404 || resp.status === 410;
@@ -388,6 +444,8 @@ export async function broadcastWikiPush(
 		ttlSeconds?: number;
 		urgency?: 'very-low' | 'low' | 'normal' | 'high';
 		fetchFn?: typeof fetch;
+		resolveDnsFn?: DnsResolverFn;
+		timeoutMs?: number;
 	} = {},
 ): Promise<{ sent: number; failed: number; pruned: number }> {
 	const allSubs = db.listPushSubscriptions(token);

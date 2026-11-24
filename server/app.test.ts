@@ -8,6 +8,9 @@ const app = new TiddlyPWASyncApp(
 	new SQLiteDatastore(),
 	'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
 	'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	'',
+	undefined,
+	{ allowCustomAppUpload: true },
 );
 await app.loadDefaultApp();
 
@@ -791,4 +794,88 @@ Deno.test('P1-6: admin authentication rate-limits repeated failed attempts per I
 	// Different IP is still allowed and valid auth succeeds
 	const otherOk = await badReq('198.51.100.11', 'test');
 	assertEquals(otherOk.status, 200);
+});
+
+Deno.test('Batch 1 security: default allowCustomAppUpload=false, reauth blocks unauthenticated uploadapp, COOP/noopener/no-store headers', async () => {
+	const defaultApp = new TiddlyPWASyncApp(
+		new SQLiteDatastore(),
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const { token: tok1 } = await defaultApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'create', atoken: 'test' }),
+		}),
+	).then((r) => r.json());
+	const blockedDefault = await defaultApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'uploadapp',
+				token: tok1,
+				authcode: 'abc',
+				files: { 'app.html': { body: '<html/>', ctype: 'text/html' } },
+			}),
+		}),
+	);
+	assertEquals(blockedDefault.status, 403);
+	assertEquals(await blockedDefault.json(), { error: 'EFORBIDDEN' });
+
+	// With allowCustomAppUpload enabled, initialized wiki without authcode is still rejected
+	const uploadEnabledApp = new TiddlyPWASyncApp(
+		new SQLiteDatastore(),
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+		'',
+		undefined,
+		{ allowCustomAppUpload: true },
+	);
+	const { token: tok2 } = await uploadEnabledApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'create', atoken: 'test' }),
+		}),
+	).then((r) => r.json());
+	await uploadEnabledApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tok2,
+				authcode: 'secret-auth',
+				salt: 'c2FsdA==',
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [{ thash: 'T3dP', ct: '1111' }],
+			}),
+		}),
+	).then((r) => r.json());
+	const unauthUpload = await uploadEnabledApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'uploadapp',
+				token: tok2,
+				files: { 'app.html': { body: '<html/>', ctype: 'text/html' } },
+			}),
+		}),
+	);
+	assertEquals(unauthUpload.status, 401);
+	assertEquals(await unauthUpload.json(), { error: 'EAUTH' });
+
+	// Security headers on admin homepage and bootstrap.json
+	const homeResp = await defaultApp.handle(new Request('http://example.com/'));
+	assertEquals(homeResp.headers.get('cross-origin-opener-policy'), 'same-origin');
+	assertEquals(homeResp.headers.get('referrer-policy'), 'no-referrer');
+	const homeHtml = await homeResp.text();
+	assertEquals(homeHtml.includes("'noopener,noreferrer'"), true);
+	assertEquals(homeHtml.includes('noopener noreferrer'), true);
+
+	const half = tok1.slice(0, Math.floor(tok1.length / 2));
+	const bootResp = await defaultApp.handle(new Request(`http://example.com/${half}/bootstrap.json`));
+	assertEquals(bootResp.headers.get('cache-control'), 'no-store');
 });

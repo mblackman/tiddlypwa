@@ -9,6 +9,7 @@ import {
 	encryptWebPushPayload,
 	generateVapidKeys,
 	getOrCreateVapidKeys,
+	sendWebPushNotification,
 } from './webpush.ts';
 
 const utfenc = new TextEncoder();
@@ -317,4 +318,99 @@ Deno.test('Crypto: deterministic Ed25519 PKCS#8 derivation from HKDF seed signs 
 	const sig = await crypto.subtle.sign({ name: 'Ed25519' }, privKey, payload);
 	const verified = await crypto.subtle.verify({ name: 'Ed25519' }, pubKey, sig, payload);
 	assertEquals(verified, true);
+});
+
+Deno.test('WebPush SSRF: push_subscribe and sendWebPushNotification reject http, loopback, metadata, and private DNS', async () => {
+	const db = new SQLiteDatastore();
+	const app = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	app.resolveDnsFn = (hostname, type) => {
+		if (hostname === 'internal.evil.example') {
+			return Promise.resolve(type === 'A' ? ['10.0.0.5'] : []);
+		}
+		return Promise.resolve(type === 'A' ? ['93.184.216.34'] : []);
+	};
+	let fetchCalled = false;
+	app.pushFetchFn = () => {
+		fetchCalled = true;
+		return Promise.resolve(new Response(null, { status: 201 }));
+	};
+
+	const tok = 'wiki-push-ssrf-token-1234567890123456';
+	db.createWiki(tok);
+	db.updateWikiAuthcode(tok, 'valid-auth');
+	const sub = await createMockBrowserSubscription();
+
+	for (
+		const badEndpoint of [
+			'http://fcm.googleapis.com/fcm/send/1',
+			'https://127.0.0.1/push',
+			'https://169.254.169.254/latest/meta-data/',
+			'https://localhost/push',
+			'https://internal.evil.example/push',
+			'https://user:pass@fcm.googleapis.com/fcm/send/1',
+		]
+	) {
+		const res = await app.handle(
+			new Request('http://example.com/tid.dly', {
+				method: 'POST',
+				body: JSON.stringify({
+					tiddlypwa: 1,
+					op: 'push_subscribe',
+					token: tok,
+					authcode: 'valid-auth',
+					subscription: { endpoint: badEndpoint, keys: sub.keys },
+				}),
+			}),
+		);
+		assertEquals(res.status, 400);
+		assertEquals(await res.json(), { error: 'EPROTO' });
+	}
+	assertEquals(fetchCalled, false);
+
+	const vapid = await getOrCreateVapidKeys(db);
+	await assertRejects(
+		() =>
+			sendWebPushNotification(
+				{ endpoint: 'https://127.0.0.1/secret-cap-path', p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+				{ mode: 'plain', notification: { title: 'x' } },
+				vapid,
+				{ fetchFn: app.pushFetchFn, resolveDnsFn: app.resolveDnsFn },
+			),
+		Error,
+	);
+	assertEquals(fetchCalled, false);
+
+	let capturedInit: RequestInit | undefined;
+	const origWarn = console.warn;
+	const warnings: string[] = [];
+	console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+	try {
+		const res = await sendWebPushNotification(
+			{
+				endpoint: 'https://fcm.googleapis.com/fcm/send/secret-device-cap-xyz',
+				p256dh: sub.keys.p256dh,
+				auth: sub.keys.auth,
+			},
+			{ mode: 'plain', notification: { title: 'x' } },
+			vapid,
+			{
+				fetchFn: (_input, init) => {
+					capturedInit = init;
+					return Promise.resolve(new Response('err-body', { status: 410 }));
+				},
+				resolveDnsFn: app.resolveDnsFn,
+			},
+		);
+		assertEquals(res.expired, true);
+		assertEquals(capturedInit?.redirect, 'manual');
+		assertEquals(capturedInit?.signal instanceof AbortSignal, true);
+		assertEquals(warnings.some((w) => w.includes('secret-device-cap-xyz')), false);
+		assertEquals(warnings.some((w) => w.includes('https://fcm.googleapis.com')), true);
+	} finally {
+		console.warn = origWarn;
+	}
 });
