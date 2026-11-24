@@ -910,3 +910,183 @@ Deno.test('P2-6: pruneTombstones deletes expired tombstones and triggers tombsto
 
 	db.deleteWiki(tok);
 });
+
+Deno.test('Batch 2 tombstone: per-wiki horizon isolates unaffected wikis and x-server-time breaks resync loop', async () => {
+	const db = new SQLiteDatastore();
+	const app = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const crypto = await createClientCrypto();
+	const tokA = 'wiki-tombstone-a-12345678901234567890';
+	const tokB = 'wiki-tombstone-b-12345678901234567890';
+	db.createWiki(tokA);
+	db.createWiki(tokB);
+	const authA = encodeBase64(await crypto.titleHash(tokA));
+	const authB = encodeBase64(await crypto.titleHash(tokB));
+
+	const now = Date.now();
+	const cutoff = now - 90 * 24 * 60 * 60 * 1000;
+	const liveEnc = await crypto.encrypt({ title: 'Live', text: 'kept' });
+	const liveHash = await crypto.titleHash('Live');
+	const oldDelHash = await crypto.titleHash('OldDel');
+
+	db.upsertTiddler(tokA, {
+		thash: liveHash,
+		iv: liveEnc.iv,
+		ct: liveEnc.ct,
+		deleted: false,
+		mtime: new Date(cutoff - 50_000),
+	});
+	// Newest row in tokA is a tombstone older than cutoff
+	db.upsertTiddler(tokA, { thash: oldDelHash, deleted: true, mtime: new Date(cutoff - 10_000) });
+
+	// tokB has no expired tombstones
+	db.upsertTiddler(tokB, {
+		thash: liveHash,
+		iv: liveEnc.iv,
+		ct: liveEnc.ct,
+		deleted: false,
+		mtime: new Date(cutoff - 50_000),
+	});
+
+	assertEquals(db.pruneTombstones(cutoff), 1);
+	// maxMtime must not regress below the pruned tombstone's mtime
+	assertEquals(db.maxMtime(tokA) >= cutoff - 10_000, true);
+
+	// tokB had 0 pruned tombstones and must NOT get tombstoneReset
+	const respB = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tokB,
+				authcode: authB,
+				now: new Date(now).toISOString(),
+				lastSync: new Date(cutoff - 20_000).toISOString(),
+				clientChanges: [],
+			}),
+		}),
+	);
+	const jsonB = await respB.json();
+	assertEquals(jsonB.tombstoneReset, undefined);
+
+	// tokA's first sync after pruning gets tombstoneReset and x-server-time >= cutoff
+	const respA1 = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tokA,
+				authcode: authA,
+				now: new Date(now).toISOString(),
+				lastSync: new Date(cutoff - 10_000).toISOString(),
+				clientChanges: [],
+			}),
+		}),
+	);
+	const serverTime1 = respA1.headers.get('x-server-time')!;
+	const jsonA1 = await respA1.json();
+	assertEquals(jsonA1.tombstoneReset, true);
+	assertEquals(new Date(serverTime1).getTime() >= cutoff, true);
+
+	// Second sync using x-server-time must NOT loop
+	const respA2 = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tokA,
+				authcode: authA,
+				now: new Date(now).toISOString(),
+				lastSync: serverTime1,
+				clientChanges: [],
+			}),
+		}),
+	);
+	const jsonA2 = await respA2.json();
+	assertEquals(jsonA2.tombstoneReset, undefined);
+	assertEquals(jsonA2.serverChanges, []);
+});
+
+Deno.test('Batch 2 OCC: legacy sync clamps far-future mtime and deleted tombstones clear blobs', async () => {
+	const db = new SQLiteDatastore();
+	const app = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const crypto = await createClientCrypto();
+	const tok = 'wiki-occ-clamp-12345678901234567890';
+	db.createWiki(tok);
+	const authcode = encodeBase64(await crypto.titleHash(tok));
+	const thash = await crypto.titleHash('Note1');
+	const thashB64 = encodeBase64(thash);
+	const enc1 = await crypto.encrypt({ title: 'Note1', text: 'server-current' });
+
+	// Write current version at server time (now + 5000 simulated via writeMtimeMs)
+	const newerTimeMs = Date.now() + 120_000;
+	db.upsertTiddler(tok, { thash, iv: enc1.iv, ct: enc1.ct, deleted: false, mtime: new Date() }, newerTimeMs);
+
+	// Legacy sync without baseMtime using year 9999 mtime must NOT bypass OCC
+	const encEvil = await crypto.encrypt({ title: 'Note1', text: 'clobber-9999' });
+	const resFuture = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tok,
+				authcode,
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [{
+					thash: thashB64,
+					iv: encodeBase64(encEvil.iv),
+					ct: encodeBase64(encEvil.ct),
+					mtime: '9999-01-01T00:00:00.000Z',
+					deleted: false,
+				}],
+			}),
+		}),
+	).then((r) => r.json());
+	assertEquals(resFuture.conflicts, [thashB64]);
+	const after = db.getTiddler(tok, thash)!;
+	assertEquals((await crypto.decrypt(after.iv!, after.ct!))?.text, 'server-current');
+
+	// Deleting a tiddler must strip iv/ct/sbiv/sbct in SQLite
+	const delRes = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tok,
+				authcode,
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [{
+					thash: thashB64,
+					iv: encodeBase64(encEvil.iv),
+					ct: encodeBase64(encEvil.ct),
+					sbiv: encodeBase64(encEvil.iv),
+					sbct: encodeBase64(encEvil.ct),
+					mtime: new Date().toISOString(),
+					baseMtime: new Date(newerTimeMs).toISOString(),
+					deleted: true,
+				}],
+			}),
+		}),
+	).then((r) => r.json());
+	assertEquals(delRes.conflicts, undefined);
+	const storedDel = db.getTiddler(tok, thash)!;
+	assertEquals(storedDel.deleted, true);
+	assertEquals(storedDel.iv, null);
+	assertEquals(storedDel.ct, null);
+	assertEquals(storedDel.sbiv, null);
+	assertEquals(storedDel.sbct, null);
+});

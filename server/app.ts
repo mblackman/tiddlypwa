@@ -82,6 +82,10 @@ function constantTimeEqual(a: string, b: string): boolean {
 	return diff === 0;
 }
 
+function isValidAuthcode(authcode: unknown): authcode is string {
+	return typeof authcode === 'string' && authcode.length >= 1 && authcode.length <= 256;
+}
+
 function supportsEncoding(headers: Headers, enc: string): boolean {
 	return !!headers.get('accept-encoding')?.split(',').find((x) => x.trim().split(';')[0] === enc);
 }
@@ -289,7 +293,7 @@ export class TiddlyPWASyncApp {
 		headers: Headers,
 	) {
 		if (
-			typeof token !== 'string' || typeof authcode !== 'string' || typeof now !== 'string' ||
+			typeof token !== 'string' || !isValidAuthcode(authcode) || typeof now !== 'string' ||
 			typeof lastSync !== 'string' || (salt && typeof salt !== 'string') ||
 			!Array.isArray(clientChanges) ||
 			(ackPatches !== undefined && (!Array.isArray(ackPatches) || !ackPatches.every((p) => typeof p === 'string')))
@@ -304,20 +308,24 @@ export class TiddlyPWASyncApp {
 		if (Math.abs(nowDate.getTime() - Date.now()) > 60000) {
 			return Response.json({ error: 'ETIMESYNC' }, { headers: respHdrs, status: 400 });
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 
 		const decodedChanges: Tiddler[] = [];
+		const seenThashes = new Set<string>();
 		try {
 			for (const change of clientChanges) {
 				if (!change || typeof change !== 'object' || typeof change.thash !== 'string') {
 					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 				}
 				const { thash, iv, ct, sbiv, sbct, mtime, deleted, baseMtime } = change;
+				const decodedThash = decodeBase64(thash);
+				const canonicalThash = encodeBase64(decodedThash);
+				if (seenThashes.has(canonicalThash)) {
+					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+				}
+				seenThashes.add(canonicalThash);
 				const itemMtime = mtime ? new Date(mtime) : new Date(0);
 				if (!Number.isFinite(itemMtime.getTime())) {
 					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
@@ -332,7 +340,7 @@ export class TiddlyPWASyncApp {
 					}
 				}
 				decodedChanges.push({
-					thash: decodeBase64(thash),
+					thash: decodedThash,
 					iv: iv ? decodeBase64(iv) : undefined,
 					ct: ct ? decodeBase64(ct) : undefined,
 					sbiv: sbiv ? decodeBase64(sbiv) : undefined,
@@ -351,10 +359,11 @@ export class TiddlyPWASyncApp {
 		const [_, appEtag] = apphtml ? processEtag(apphtml.etag, headers) : [null, null];
 
 		const snapshotMaxMtime = this.db.maxMtime(token);
-		const serverTimeDate = snapshotMaxMtime > 0 ? new Date(snapshotMaxMtime) : new Date(0);
-		const tombstoneHorizon = this.db.getTombstoneHorizon();
+		const tombstoneHorizon = this.db.getWikiTombstoneHorizon(token);
 		const tombstoneReset = modsince.getTime() > 0 && modsince.getTime() < tombstoneHorizon;
 		const effectiveSince = tombstoneReset ? new Date(0) : modsince;
+		const effectiveServerTimeMs = Math.max(snapshotMaxMtime, tombstoneReset ? tombstoneHorizon : 0);
+		const serverTimeDate = effectiveServerTimeMs > 0 ? new Date(effectiveServerTimeMs) : new Date(0);
 
 		return streamsponse((ctrl) => {
 			ctrl.enqueue(`{"appEtag":${JSON.stringify(appEtag)},"serverChanges":[`);
@@ -365,8 +374,14 @@ export class TiddlyPWASyncApp {
 			let pendingPatches: Array<{ patchId: string; watcherId: string; patch: unknown; createdAt: number }> = [];
 
 			this.db.transaction(() => {
-				if (!(wiki as Wiki).authcode && authcode) this.db.updateWikiAuthcode(token, authcode);
-				if (!(wiki as Wiki).salt && salt) this.db.updateWikiSalt(token, salt as string);
+				const freshWiki = this.db.getWiki(token);
+				if (!freshWiki || (freshWiki.authcode && !constantTimeEqual(authcode, freshWiki.authcode))) {
+					throw new Error('EAUTH');
+				}
+				if (!freshWiki.authcode) this.db.bindWikiAuthcodeIfUnset(token, authcode);
+				if (!freshWiki.salt && typeof salt === 'string' && salt.length > 0) {
+					this.db.bindWikiSaltIfUnset(token, salt);
+				}
 				if (Array.isArray(ackPatches) && ackPatches.length > 0) {
 					this.db.deletePendingPatches(token, ackPatches as string[]);
 				}
@@ -454,7 +469,7 @@ export class TiddlyPWASyncApp {
 
 	@getWiki('EAUTH')
 	handleVerifyAuth({ wiki, token, authcode }: Record<string, unknown>) {
-		if (typeof token !== 'string' || typeof authcode !== 'string') {
+		if (typeof token !== 'string' || !isValidAuthcode(authcode)) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
 		const storedAuthcode = (wiki as Wiki).authcode;
@@ -489,20 +504,16 @@ export class TiddlyPWASyncApp {
 	@adminAuth
 	@getWiki('EEXIST')
 	handleReauth({ token }: Record<string, unknown>) {
-		this.db.updateWikiAuthcode(token as string, null);
-		this.db.updateWikiWatcherPubKey(token as string, null);
+		this.db.clearWikiAuth(token as string);
 		return Response.json({}, { headers: respHdrs, status: 200 });
 	}
 
 	@getWiki('EAUTH')
 	async handlePushInfo({ wiki, token, authcode, endpoint }: Record<string, unknown>) {
-		if (typeof token !== 'string' || typeof authcode !== 'string') {
+		if (typeof token !== 'string' || !isValidAuthcode(authcode)) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 		const vapid = await this.ensureVapidKeys();
@@ -523,16 +534,13 @@ export class TiddlyPWASyncApp {
 	@getWiki('EAUTH')
 	async handlePushSubscribe({ wiki, token, authcode, subscription, uaHint }: Record<string, unknown>) {
 		if (
-			typeof token !== 'string' || typeof authcode !== 'string' ||
+			typeof token !== 'string' || !isValidAuthcode(authcode) ||
 			typeof subscription !== 'object' || !subscription ||
 			(uaHint !== undefined && typeof uaHint !== 'string')
 		) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 		const subObj = subscription as Record<string, unknown>;
@@ -561,8 +569,14 @@ export class TiddlyPWASyncApp {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
 
+		let authFailed = false;
 		this.db.transaction(() => {
-			if (!(wiki as Wiki).authcode && authcode) this.db.updateWikiAuthcode(token, authcode);
+			const freshWiki = this.db.getWiki(token);
+			if (!freshWiki || (freshWiki.authcode && !constantTimeEqual(authcode, freshWiki.authcode))) {
+				authFailed = true;
+				return;
+			}
+			if (!freshWiki.authcode) this.db.bindWikiAuthcodeIfUnset(token, authcode);
 			this.db.upsertPushSubscription({
 				token,
 				endpoint,
@@ -572,6 +586,9 @@ export class TiddlyPWASyncApp {
 				created_at: Date.now(),
 			});
 		});
+		if (authFailed) {
+			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
+		}
 
 		const vapid = await this.ensureVapidKeys();
 		return Response.json(
@@ -582,13 +599,10 @@ export class TiddlyPWASyncApp {
 
 	@getWiki('EAUTH')
 	handlePushUnsubscribe({ wiki, token, authcode, endpoint, all }: Record<string, unknown>) {
-		if (typeof token !== 'string' || typeof authcode !== 'string') {
+		if (typeof token !== 'string' || !isValidAuthcode(authcode)) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 		if (all === true) {
@@ -604,15 +618,12 @@ export class TiddlyPWASyncApp {
 	@getWiki('EAUTH')
 	async handlePushTest({ wiki, token, authcode, endpoint, payload }: Record<string, unknown>) {
 		if (
-			typeof token !== 'string' || typeof authcode !== 'string' ||
+			typeof token !== 'string' || !isValidAuthcode(authcode) ||
 			(endpoint !== undefined && typeof endpoint !== 'string')
 		) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 		let envelope: Record<string, unknown>;
@@ -651,16 +662,13 @@ export class TiddlyPWASyncApp {
 	@getWiki('EAUTH')
 	handleSyncSchedules({ wiki, token, authcode, upserts, removals }: Record<string, unknown>) {
 		if (
-			typeof token !== 'string' || typeof authcode !== 'string' ||
+			typeof token !== 'string' || !isValidAuthcode(authcode) ||
 			(upserts !== undefined && !Array.isArray(upserts)) ||
 			(removals !== undefined && !Array.isArray(removals))
 		) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 		const upsertList = Array.isArray(upserts) ? upserts : [];
@@ -726,8 +734,14 @@ export class TiddlyPWASyncApp {
 		}
 
 		const nowMs = Date.now();
+		let authFailed = false;
 		this.db.transaction(() => {
-			if (!(wiki as Wiki).authcode && authcode) this.db.updateWikiAuthcode(token, authcode);
+			const freshWiki = this.db.getWiki(token);
+			if (!freshWiki || (freshWiki.authcode && !constantTimeEqual(authcode, freshWiki.authcode))) {
+				authFailed = true;
+				return;
+			}
+			if (!freshWiki.authcode) this.db.bindWikiAuthcodeIfUnset(token, authcode);
 			if (validRemovals.length > 0) {
 				this.db.deleteScheduledNotifications(token, validRemovals);
 			}
@@ -742,6 +756,9 @@ export class TiddlyPWASyncApp {
 				});
 			}
 		});
+		if (authFailed) {
+			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
+		}
 
 		return Response.json(
 			{ ok: true, upserted: validUpserts.length, removed: validRemovals.length },
@@ -754,17 +771,14 @@ export class TiddlyPWASyncApp {
 		{ wiki, token, authcode, watcherPubKey, watchers, removedWatcherIds }: Record<string, unknown>,
 	) {
 		if (
-			typeof token !== 'string' || typeof authcode !== 'string' ||
+			typeof token !== 'string' || !isValidAuthcode(authcode) ||
 			(watcherPubKey !== undefined && typeof watcherPubKey !== 'string') ||
 			(watchers !== undefined && !Array.isArray(watchers)) ||
 			(removedWatcherIds !== undefined && !Array.isArray(removedWatcherIds))
 		) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 
@@ -897,12 +911,32 @@ export class TiddlyPWASyncApp {
 			});
 		}
 
+		let authFailed = false;
+		let protoFailed = false;
 		this.db.transaction(() => {
-			if (!(wiki as Wiki).authcode && authcode) {
-				this.db.updateWikiAuthcode(token, authcode);
+			const freshWiki = this.db.getWiki(token);
+			if (!freshWiki || (freshWiki.authcode && !constantTimeEqual(authcode, freshWiki.authcode))) {
+				authFailed = true;
+				return;
 			}
-			if (!existingPubKey && effectivePubKey) {
-				this.db.updateWikiWatcherPubKey(token, effectivePubKey);
+			if (freshWiki.watcher_pubkey) {
+				if (
+					(typeof watcherPubKey === 'string' && watcherPubKey.length > 0 &&
+						freshWiki.watcher_pubkey !== watcherPubKey) ||
+					freshWiki.watcher_pubkey !== effectivePubKey
+				) {
+					authFailed = true;
+					return;
+				}
+			} else if (validWatchers.length > 0 && !effectivePubKey) {
+				protoFailed = true;
+				return;
+			}
+			if (!freshWiki.authcode) {
+				this.db.bindWikiAuthcodeIfUnset(token, authcode);
+			}
+			if (!freshWiki.watcher_pubkey && effectivePubKey) {
+				this.db.bindWikiWatcherPubKeyIfUnset(token, effectivePubKey);
 			}
 			for (const remId of validRemovals) {
 				this.db.deleteWatcherModule(token, remId);
@@ -914,6 +948,12 @@ export class TiddlyPWASyncApp {
 				});
 			}
 		});
+		if (authFailed) {
+			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
+		}
+		if (protoFailed) {
+			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+		}
 
 		return Response.json(
 			{ ok: true, upserted: validWatchers.length, removed: validRemovals.length },
@@ -923,13 +963,10 @@ export class TiddlyPWASyncApp {
 
 	@getWiki('EAUTH')
 	handleListWatchers({ wiki, token, authcode }: Record<string, unknown>) {
-		if (typeof token !== 'string' || typeof authcode !== 'string') {
+		if (typeof token !== 'string' || !isValidAuthcode(authcode)) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 		const rows = this.db.listWatcherModules(token);
@@ -953,15 +990,12 @@ export class TiddlyPWASyncApp {
 	@getWiki('EAUTH')
 	async handleRunWatcher({ wiki, token, authcode, watcherId }: Record<string, unknown>) {
 		if (
-			typeof token !== 'string' || typeof authcode !== 'string' ||
+			typeof token !== 'string' || !isValidAuthcode(authcode) ||
 			typeof watcherId !== 'string' || watcherId.length === 0
 		) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
-		if (
-			(wiki as Wiki).authcode &&
-			(typeof authcode !== 'string' || !constantTimeEqual(authcode, (wiki as Wiki).authcode!))
-		) {
+		if ((wiki as Wiki).authcode && !constantTimeEqual(authcode, (wiki as Wiki).authcode!)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
 

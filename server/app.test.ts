@@ -252,9 +252,9 @@ Deno.test('schema migration from version 1 to 2 preserves data and allows multi-
 	// Run migration
 	ds.migrate();
 
-	// Verify user_version is now 4
+	// Verify user_version is now 5
 	const ver = ds.query('PRAGMA user_version')[0][0] as number;
-	assertEquals(ver, 4);
+	assertEquals(ver, 5);
 
 	// Verify migrated row exists
 	const rows = [...ds.tiddlersChangedSince('wiki1', new Date(0))];
@@ -878,4 +878,134 @@ Deno.test('Batch 1 security: default allowCustomAppUpload=false, reauth blocks u
 	const half = tok1.slice(0, Math.floor(tok1.length / 2));
 	const bootResp = await defaultApp.handle(new Request(`http://example.com/${half}/bootstrap.json`));
 	assertEquals(bootResp.headers.get('cache-control'), 'no-store');
+});
+
+Deno.test('Batch 2 reauth & auth validation: reauth clears salt/watcher_pubkey/watchers and rejects empty authcode & duplicate thash', async () => {
+	const db = new SQLiteDatastore();
+	const testApp = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const { token } = await testApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'create', atoken: 'test' }),
+		}),
+	).then((r) => r.json());
+	const half = token.slice(0, Math.floor(token.length / 2));
+
+	// Reject empty authcode
+	const emptyAuth = await testApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token,
+				authcode: '',
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [],
+			}),
+		}),
+	);
+	assertEquals(emptyAuth.status, 400);
+	assertEquals(await emptyAuth.json(), { error: 'EPROTO' });
+
+	// Reject duplicate thash in single sync batch
+	const dupRes = await testApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token,
+				authcode: 'auth-one',
+				salt: 'c2FsdDE=',
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [
+					{ thash: 'T3dP', ct: '1111', baseMtime: null },
+					{ thash: 'T3dP', ct: '2222', baseMtime: null },
+				],
+			}),
+		}),
+	);
+	assertEquals(dupRes.status, 400);
+	assertEquals(await dupRes.json(), { error: 'EPROTO' });
+
+	// Initial pairing sets authcode and salt
+	await testApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token,
+				authcode: 'auth-one',
+				salt: 'c2FsdDE=',
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [],
+			}),
+		}),
+	).then((r) => r.json());
+
+	db.updateWikiWatcherPubKey(token, 'pubkey1');
+	db.upsertWatcherModule({
+		token,
+		watcher_id: 'w1',
+		code_hash: 'h1',
+		code_source: 'export async function evaluate() { return []; }',
+		allowed_hosts: 'example.com',
+		schedule_cron: '0 * * * *',
+		timezone: 'UTC',
+		watched_items: '[]',
+		signature: 'sig1',
+	});
+
+	const bootBefore = await testApp.handle(new Request(`http://example.com/${half}/bootstrap.json`)).then((r) =>
+		r.json()
+	);
+	assertEquals(bootBefore.state, 'existing');
+	assertEquals(bootBefore.salt, 'c2FsdDE=');
+
+	// Reauth clears authcode, salt, watcher_pubkey, and watcher_modules
+	await testApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'reauth', atoken: 'test', token }),
+		}),
+	).then((r) => r.json());
+	assertEquals(db.listWatcherModules(token).length, 0);
+
+	const bootCleared = await testApp.handle(new Request(`http://example.com/${half}/bootstrap.json`)).then((r) =>
+		r.json()
+	);
+	assertEquals(bootCleared.state, 'fresh');
+	assertEquals(bootCleared.salt, null);
+
+	// Re-pair with new authcode and new salt
+	await testApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token,
+				authcode: 'auth-two',
+				salt: 'c2FsdDI=',
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [],
+			}),
+		}),
+	).then((r) => r.json());
+
+	const bootAfter = await testApp.handle(new Request(`http://example.com/${half}/bootstrap.json`)).then((r) =>
+		r.json()
+	);
+	assertEquals(bootAfter.state, 'existing');
+	assertEquals(bootAfter.salt, 'c2FsdDI=');
 });

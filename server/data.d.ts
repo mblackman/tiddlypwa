@@ -4,6 +4,8 @@ export type Wiki = {
 	salt?: string;
 	note?: string;
 	watcher_pubkey?: string;
+	tombstone_horizon?: number;
+	last_mtime?: number;
 };
 
 export type File = {
@@ -76,6 +78,10 @@ export interface Datastore {
 	updateWikiAuthcode(token: string, authcode?: string | null): void;
 	updateWikiSalt(token: string, salt: string): void;
 	updateWikiWatcherPubKey(token: string, pubkey?: string | null): void;
+	bindWikiAuthcodeIfUnset(token: string, authcode: string): boolean;
+	bindWikiSaltIfUnset(token: string, salt: string): boolean;
+	bindWikiWatcherPubKeyIfUnset(token: string, pubkey: string): boolean;
+	clearWikiAuth(token: string): void;
 	deleteWiki(token: string): void;
 	fileExists(etag: Uint8Array): boolean;
 	storeFile(file: File): void;
@@ -89,6 +95,7 @@ export interface Datastore {
 	tiddlersChangedSince(token: string, since: Date): Generator<Tiddler>;
 	upsertTiddler(token: string, tiddler: Tiddler, writeMtimeMs?: number): { success: boolean; conflict?: boolean };
 	getTombstoneHorizon(): number;
+	getWikiTombstoneHorizon(token: string): number;
 	pruneTombstones(cutoffMs: number): number;
 	upsertPushSubscription(sub: PushSubscriptionRow): void;
 	deletePushSubscription(token: string, endpoint: string): void;

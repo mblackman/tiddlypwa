@@ -57,10 +57,10 @@ export class SQLiteDatastore implements Datastore {
 
 		this.#getConfigStmt = this.#prep(sql`SELECT value FROM server_config WHERE key = :key`);
 		this.#wikiStmt = this.#prep(
-			sql`SELECT token, authcode, salt, note, watcher_pubkey FROM wikis WHERE token = :token`,
+			sql`SELECT token, authcode, salt, note, watcher_pubkey, tombstone_horizon, last_mtime FROM wikis WHERE token = :token`,
 		);
 		this.#wikiPrefixStmt = this.#prep(
-			sql`SELECT token, authcode, salt, note, watcher_pubkey FROM wikis WHERE substr(token, 1, length(:halftoken)) = :halftoken`,
+			sql`SELECT token, authcode, salt, note, watcher_pubkey, tombstone_horizon, last_mtime FROM wikis WHERE substr(token, 1, length(:halftoken)) = :halftoken`,
 		);
 		this.#wikiFileStmt = this.#prep(sql`
 			SELECT files.etag AS etag, rawsize, ctype, body
@@ -346,6 +346,28 @@ export class SQLiteDatastore implements Datastore {
 				COMMIT;
 			`);
 		}
+
+		const verAfterV4 = this.query<[number]>('PRAGMA user_version')[0][0];
+		if (verAfterV4 < 5) {
+			const wikiCols = this.query<[number, string]>(sql`PRAGMA table_info(wikis)`).map((r) => r[1]);
+			const addHorizonSql = wikiCols.includes('tombstone_horizon')
+				? ''
+				: 'ALTER TABLE wikis ADD COLUMN tombstone_horizon INTEGER NOT NULL DEFAULT 0;';
+			const addLastMtimeSql = wikiCols.includes('last_mtime')
+				? ''
+				: 'ALTER TABLE wikis ADD COLUMN last_mtime INTEGER NOT NULL DEFAULT 0;';
+			this.execute(sql`
+				BEGIN TRANSACTION;
+				${addHorizonSql}
+				${addLastMtimeSql}
+				UPDATE wikis SET last_mtime = MAX(
+					last_mtime,
+					COALESCE((SELECT MAX(mtime) FROM tiddlers WHERE tiddlers.token = wikis.token), 0)
+				);
+				PRAGMA user_version = 5;
+				COMMIT;
+			`);
+		}
 	}
 
 	getServerConfig(key: string): string | undefined {
@@ -406,6 +428,40 @@ export class SQLiteDatastore implements Datastore {
 
 	updateWikiWatcherPubKey(token: string, pubkey?: string | null) {
 		this.query(sql`UPDATE wikis SET watcher_pubkey = :pubkey WHERE token = :token`, { token, pubkey });
+	}
+
+	bindWikiAuthcodeIfUnset(token: string, authcode: string): boolean {
+		this.query(
+			sql`UPDATE wikis SET authcode = :authcode WHERE token = :token AND authcode IS NULL`,
+			{ token, authcode },
+		);
+		return this.#changes > 0;
+	}
+
+	bindWikiSaltIfUnset(token: string, salt: string): boolean {
+		this.query(
+			sql`UPDATE wikis SET salt = :salt WHERE token = :token AND salt IS NULL`,
+			{ token, salt },
+		);
+		return this.#changes > 0;
+	}
+
+	bindWikiWatcherPubKeyIfUnset(token: string, pubkey: string): boolean {
+		this.query(
+			sql`UPDATE wikis SET watcher_pubkey = :pubkey WHERE token = :token AND watcher_pubkey IS NULL`,
+			{ token, pubkey },
+		);
+		return this.#changes > 0;
+	}
+
+	clearWikiAuth(token: string): void {
+		this.transaction(() => {
+			this.query(
+				sql`UPDATE wikis SET authcode = NULL, salt = NULL, watcher_pubkey = NULL WHERE token = :token`,
+				{ token },
+			);
+			this.query(sql`DELETE FROM watcher_modules WHERE token = :token`, { token });
+		});
 	}
 
 	deleteWiki(token: string) {
@@ -476,7 +532,9 @@ export class SQLiteDatastore implements Datastore {
 
 	maxMtime(token: string): number {
 		const row = this.#maxMtimeStmt.get({ token }) as { mtime: number | null } | undefined;
-		return row && row.mtime !== null ? row.mtime : 0;
+		const tidMax = row && row.mtime !== null ? row.mtime : 0;
+		const wiki = this.getWiki(token);
+		return Math.max(tidMax, wiki?.last_mtime ?? 0);
 	}
 
 	getNextMtime(token: string): number {
@@ -487,21 +545,28 @@ export class SQLiteDatastore implements Datastore {
 	upsertTiddler(token: string, tiddler: Tiddler, writeMtimeMs?: number): { success: boolean; conflict?: boolean } {
 		const clientMtimeMs = tiddler.mtime.getTime();
 		const finalMtimeMs = writeMtimeMs !== undefined ? writeMtimeMs : clientMtimeMs;
+		const isDeleted = Boolean(tiddler.deleted);
 
 		const params = normalizeParams({
 			token,
 			thash: tiddler.thash,
-			iv: tiddler.iv,
-			ct: tiddler.ct,
-			sbiv: tiddler.sbiv,
-			sbct: tiddler.sbct,
+			iv: isDeleted ? undefined : tiddler.iv,
+			ct: isDeleted ? undefined : tiddler.ct,
+			sbiv: isDeleted ? undefined : tiddler.sbiv,
+			sbct: isDeleted ? undefined : tiddler.sbct,
 			mtime: finalMtimeMs,
-			deleted: tiddler.deleted ? 1 : 0,
+			deleted: isDeleted ? 1 : 0,
 		})!;
 
 		// Try insert first (handles the common case of new tiddlers).
 		this.#changes = Number(this.#insertStmt.run(params).changes);
 		if (this.#changes > 0) {
+			const upsertChanges = this.#changes;
+			this.query(
+				sql`UPDATE wikis SET last_mtime = MAX(last_mtime, :mtime) WHERE token = :token`,
+				{ token, mtime: finalMtimeMs },
+			);
+			this.#changes = upsertChanges;
 			return { success: true };
 		}
 
@@ -518,16 +583,23 @@ export class SQLiteDatastore implements Datastore {
 				}).changes,
 			);
 		} else {
-			// Backward compatibility: update only if our mtime is strictly newer.
+			// Backward compatibility: clamp clientMtime to prevent far-future OCC bypass.
+			const safeClientMtimeMs = Math.min(clientMtimeMs, Date.now() + 60_000);
 			this.#changes = Number(
 				this.#updateWithMtimeStmt.run({
 					...params,
-					clientMtime: clientMtimeMs,
+					clientMtime: safeClientMtimeMs,
 				}).changes,
 			);
 		}
 
 		if (this.#changes > 0) {
+			const upsertChanges = this.#changes;
+			this.query(
+				sql`UPDATE wikis SET last_mtime = MAX(last_mtime, :mtime) WHERE token = :token`,
+				{ token, mtime: finalMtimeMs },
+			);
+			this.#changes = upsertChanges;
 			return { success: true };
 		}
 		return { success: false, conflict: true };
@@ -539,14 +611,41 @@ export class SQLiteDatastore implements Datastore {
 		return Number.isFinite(n) ? n : 0;
 	}
 
+	getWikiTombstoneHorizon(token: string): number {
+		const wiki = this.getWiki(token);
+		const n = wiki?.tombstone_horizon ?? 0;
+		return Number.isFinite(n) ? n : 0;
+	}
+
 	pruneTombstones(cutoffMs: number): number {
 		if (!Number.isFinite(cutoffMs) || cutoffMs <= 0) return 0;
 		let pruned = 0;
 		this.transaction(() => {
+			this.query(
+				sql`
+					UPDATE wikis
+					SET
+						last_mtime = MAX(
+							last_mtime,
+							COALESCE((
+								SELECT MAX(mtime) FROM tiddlers
+								WHERE tiddlers.token = wikis.token AND deleted = 1 AND mtime < :cutoffMs
+							), 0)
+						),
+						tombstone_horizon = MAX(tombstone_horizon, :cutoffMs)
+					WHERE EXISTS (
+						SELECT 1 FROM tiddlers
+						WHERE tiddlers.token = wikis.token AND deleted = 1 AND mtime < :cutoffMs
+					)
+				`,
+				{ cutoffMs },
+			);
 			this.query(sql`DELETE FROM tiddlers WHERE deleted = 1 AND mtime < :cutoffMs`, { cutoffMs });
 			pruned = this.#changes;
-			const nextHorizon = Math.max(this.getTombstoneHorizon(), cutoffMs);
-			this.setServerConfig('tombstone_horizon', String(nextHorizon));
+			if (pruned > 0) {
+				const nextHorizon = Math.max(this.getTombstoneHorizon(), cutoffMs);
+				this.setServerConfig('tombstone_horizon', String(nextHorizon));
+			}
 		});
 		return pruned;
 	}
