@@ -1,6 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
+import { brotliDecompressSync } from 'node:zlib';
 import { assertEquals } from '@std/assert';
-import * as brotli from 'brotli';
 import { SQLiteDatastore } from './sqlite.ts';
 import { TiddlyPWASyncApp } from './app.ts';
 
@@ -489,7 +489,7 @@ Deno.test('wiki asset serving: Brotli encoding and fallback decompression', asyn
 	assertEquals(brResp.status, 200);
 	assertEquals(brResp.headers.get('content-encoding'), 'br');
 	const brBytes = new Uint8Array(await brResp.arrayBuffer());
-	const decompressed = brotli.decompress(brBytes);
+	const decompressed = brotliDecompressSync(brBytes);
 	assertEquals(new TextDecoder().decode(decompressed), testHtml);
 
 	// 2. Request without br (fallback to uncompressed)
@@ -520,7 +520,7 @@ Deno.test('wiki asset serving: unseeded wiki falls back to bundled default app',
 	assertEquals(brResp.status, 200);
 	assertEquals(brResp.headers.get('content-encoding'), 'br');
 	const brBytes = new Uint8Array(await brResp.arrayBuffer());
-	const decompressed = brotli.decompress(brBytes);
+	const decompressed = brotliDecompressSync(brBytes);
 	const text = new TextDecoder().decode(decompressed);
 	assertEquals(text.includes('$:/plugins/mblackman/tiddlypwa'), true);
 
@@ -1151,4 +1151,119 @@ Deno.test('Batch 3 auth & proxy: trustProxy rightmost XFF, malformed hash safety
 	// Reusing the same single-use ticket must be rejected
 	const replayMon = listApp.handleMonitor(new URLSearchParams({ ticket, browserToken: 'b1' }), 20);
 	assertEquals(replayMon.status, 401);
+});
+
+Deno.test('Batch 4 limits & streaming: pre-auth 413 body limit, payload bounds, and >40 tiddler keyset streaming', async () => {
+	// 1. Pre-auth 413 body size ceiling (with and without Content-Length)
+	const cappedApp = new TiddlyPWASyncApp(
+		new SQLiteDatastore(),
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+		'',
+		undefined,
+		{ maxBodyBytes: 512 },
+	);
+	const bigPayload = JSON.stringify({ tiddlypwa: 1, op: 'list', atoken: 'x'.repeat(1024) });
+	const clResp = await cappedApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			headers: { 'content-length': String(bigPayload.length) },
+			body: bigPayload,
+		}),
+	);
+	assertEquals(clResp.status, 413);
+	assertEquals(await clResp.json(), { error: 'ETOOLARGE' });
+
+	const streamBody = new ReadableStream<Uint8Array>({
+		start(ctrl) {
+			const bytes = new TextEncoder().encode(bigPayload);
+			ctrl.enqueue(bytes.subarray(0, 300));
+			ctrl.enqueue(bytes.subarray(300));
+			ctrl.close();
+		},
+	});
+	const streamResp = await cappedApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: streamBody,
+		}),
+	);
+	assertEquals(streamResp.status, 413);
+	assertEquals(await streamResp.json(), { error: 'ETOOLARGE' });
+
+	// 2. Payload validation bounds (note, thash, iv, ackPatches, push_test)
+	const tok = await createWiki();
+	const longNote = await api({ op: 'create', atoken: 'test', note: 'n'.repeat(1025) });
+	assertEquals(longNote.error, 'EPROTO');
+
+	const tooManyChanges = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: new Date(),
+		lastSync: new Date(0),
+		clientChanges: Array.from({ length: 5001 }, () => ({ thash: 'AAAA' })),
+	});
+	assertEquals(tooManyChanges.error, 'EPROTO');
+
+	const oversizedThash = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: new Date(),
+		lastSync: new Date(0),
+		clientChanges: [{ thash: btoa('x'.repeat(65)), ct: 'AAAA' }],
+	});
+	assertEquals(oversizedThash.error, 'EPROTO');
+
+	const oversizedIv = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: new Date(),
+		lastSync: new Date(0),
+		clientChanges: [{ thash: 'AAAA', iv: btoa('x'.repeat(65)), ct: 'AAAA' }],
+	});
+	assertEquals(oversizedIv.error, 'EPROTO');
+
+	const tooManyAck = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: new Date(),
+		lastSync: new Date(0),
+		clientChanges: [],
+		ackPatches: Array.from({ length: 501 }, (_, i) => `p${i}`),
+	});
+	assertEquals(tooManyAck.error, 'EPROTO');
+
+	const oversizedPush = await api({
+		op: 'push_test',
+		token: tok,
+		authcode: 'test',
+		payload: { mode: 'encrypted', iv: 'AAAA', ct: 'a'.repeat(9000) },
+	});
+	assertEquals(oversizedPush.error, 'EPROTO');
+
+	// 3. Multi-page keyset streaming (> 40 tiddlers across pages of 16)
+	const batch = Array.from({ length: 42 }, (_, i) => ({
+		thash: btoa(`tid_${String(i).padStart(3, '0')}`),
+		ct: btoa(`body_${i}`),
+		baseMtime: null,
+	}));
+	const writeRes = await api({
+		op: 'sync',
+		token: tok,
+		authcode: 'test',
+		now: new Date(),
+		lastSync: new Date(0),
+		clientChanges: batch,
+	});
+	assertEquals(writeRes.successes?.length, 42);
+
+	const readRes = await sync(tok, 'test', new Date(), new Date(0), []);
+	assertEquals(readRes.serverChanges.length, 42);
+	assertEquals(new Set(readRes.serverChanges.map((c: any) => c.thash)).size, 42);
+
+	await deleteWiki(tok);
 });

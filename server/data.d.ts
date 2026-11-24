@@ -99,10 +99,20 @@ export interface Datastore {
 	dissociateFiles(token: string): void;
 	dissociateAllFiles(): void;
 	getWikiFile(halftoken: string, name: string): File | undefined;
+	getExactWikiFile(token: string, name: string): File | undefined;
 	getTiddler(token: string, thash: Uint8Array): Tiddler | undefined;
 	getNextMtime(token: string): number;
 	maxMtime(token: string): number;
 	tiddlersChangedSince(token: string, since: Date): Generator<Tiddler>;
+	tiddlersChangedPage(
+		token: string,
+		afterMtimeMs: number,
+		afterThash: Uint8Array | null,
+		upperBoundMs: number,
+		limit: number,
+	): Tiddler[];
+	healthCheck(): boolean;
+	checkpointAndClose(): void;
 	upsertTiddler(token: string, tiddler: Tiddler, writeMtimeMs?: number): { success: boolean; conflict?: boolean };
 	getTombstoneHorizon(): number;
 	getWikiTombstoneHorizon(token: string): number;

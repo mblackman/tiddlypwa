@@ -1,8 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { brotliCompress, constants as zlibConstants } from 'node:zlib';
+import { brotliCompress, brotliDecompress, constants as zlibConstants } from 'node:zlib';
 import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url';
 import { decodeBase64, encodeBase64 } from '@std/encoding/base64';
-import * as brotli from 'brotli';
 import { renderHomePage } from './pages.ts';
 import { Datastore, Tiddler, Wiki } from './data.d.ts';
 import { broadcastWikiPush, decodeBase64Flexible, getOrCreateVapidKeys, VapidKeys } from './webpush.ts';
@@ -17,6 +16,53 @@ import {
 } from './watcher_runner.ts';
 
 const utfenc = new TextEncoder();
+const utfdec = new TextDecoder();
+
+class BodyTooLargeError extends Error {}
+
+async function readJsonBounded(req: Request, maxBytes: number): Promise<unknown> {
+	const clHeader = req.headers.get('content-length');
+	if (clHeader !== null) {
+		const cl = Number(clHeader);
+		if (Number.isFinite(cl) && cl > maxBytes) {
+			await req.body?.cancel().catch(() => {});
+			throw new BodyTooLargeError();
+		}
+	}
+	if (!req.body) {
+		throw new SyntaxError('Empty request body');
+	}
+	const reader = req.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (value && value.byteLength > 0) {
+				total += value.byteLength;
+				if (total > maxBytes) {
+					await reader.cancel().catch(() => {});
+					throw new BodyTooLargeError();
+				}
+				chunks.push(value);
+			}
+		}
+	} finally {
+		try {
+			reader.releaseLock();
+		} catch (_e) {
+			// ignore
+		}
+	}
+	const buf = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		buf.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return JSON.parse(utfdec.decode(buf));
+}
 
 // Pending: https://github.com/denoland/deno/issues/19160
 
@@ -106,8 +152,8 @@ function notifyMonitors(token: string, browserToken: string) {
 // ReadableStreamDefaultControllerCallback is deprecated
 type CtrlCb<R> = (controller: ReadableStreamDefaultController<R>) => void | PromiseLike<void>;
 
-function streamsponse(start: CtrlCb<string>, init: ResponseInit | undefined) {
-	return new Response(new ReadableStream({ start }).pipeThrough(new TextEncoderStream()), init);
+function streamsponse(start: CtrlCb<string>, pull: CtrlCb<string>, init: ResponseInit | undefined) {
+	return new Response(new ReadableStream({ start, pull }).pipeThrough(new TextEncoderStream()), init);
 }
 
 const ALLOWED_APP_FILENAMES: Record<string, string> = {
@@ -121,6 +167,10 @@ const ADMIN_GLOBAL_RATE_LIMIT_MAX = 30;
 const ADMIN_RATE_LIMIT_WINDOW_MS = 60_000;
 const ADMIN_FAILURES_MAX_KEYS = 4096;
 const ADMIN_VERIFY_MAX_INFLIGHT = 4;
+const DEFAULT_MAX_BODY_BYTES = 64 * 1024 * 1024;
+const MAX_SYNC_CHANGES = 5000;
+const MAX_SYNC_DECODED_BYTES = 50 * 1024 * 1024;
+const MAX_DECOMPRESS_BYTES = 50 * 1024 * 1024;
 
 export class TiddlyPWASyncApp {
 	db: Datastore;
@@ -130,6 +180,7 @@ export class TiddlyPWASyncApp {
 	vapidSubject: string;
 	allowCustomAppUpload: boolean;
 	trustProxy: boolean;
+	maxBodyBytes: number;
 	defaultAppVersion = '5.4.1';
 	vapidKeys?: VapidKeys;
 	pushFetchFn?: typeof fetch;
@@ -147,7 +198,7 @@ export class TiddlyPWASyncApp {
 		adminpwhash: string,
 		basepath: string = '',
 		vapidSubject: string = 'mailto:noreply@example.com',
-		options?: { allowCustomAppUpload?: boolean; trustProxy?: boolean },
+		options?: { allowCustomAppUpload?: boolean; trustProxy?: boolean; maxBodyBytes?: number },
 	) {
 		this.db = db;
 		this.adminpwsalt = decodeBase64Url(adminpwsalt);
@@ -156,6 +207,7 @@ export class TiddlyPWASyncApp {
 		this.vapidSubject = vapidSubject;
 		this.allowCustomAppUpload = options?.allowCustomAppUpload ?? false;
 		this.trustProxy = options?.trustProxy ?? false;
+		this.maxBodyBytes = options?.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
 	}
 
 	async ensureVapidKeys(): Promise<VapidKeys> {
@@ -192,7 +244,7 @@ export class TiddlyPWASyncApp {
 		const storeTag = '<script class="tiddlywiki-tiddler-store" type="application/json">';
 		let defaultPlugins: Map<string, Record<string, unknown>>;
 		try {
-			const defaultHtml = new TextDecoder().decode(brotli.decompress(defaultApp.body));
+			const defaultHtml = utfdec.decode(await this.#decompressBrotliAsync(defaultApp.body));
 			const sIdx = defaultHtml.indexOf(storeTag);
 			const eIdx = sIdx !== -1 ? defaultHtml.indexOf('</script>', sIdx) : -1;
 			if (sIdx === -1 || eIdx === -1) return;
@@ -215,9 +267,9 @@ export class TiddlyPWASyncApp {
 
 		for (const wiki of wikis) {
 			try {
-				const appFile = this.db.getWikiFile(wiki.token, 'app.html');
+				const appFile = this.db.getExactWikiFile(wiki.token, 'app.html');
 				if (!appFile) continue;
-				const html = new TextDecoder().decode(brotli.decompress(appFile.body));
+				const html = utfdec.decode(await this.#decompressBrotliAsync(appFile.body));
 				const sIdx = html.indexOf(storeTag);
 				const eIdx = sIdx !== -1 ? html.indexOf('</script>', sIdx) : -1;
 				if (sIdx === -1 || eIdx === -1) continue;
@@ -261,7 +313,7 @@ export class TiddlyPWASyncApp {
 					const newHtml = html.slice(0, sIdx + storeTag.length) + serializedStore + html.slice(eIdx);
 					const utf = utfenc.encode(newHtml);
 					const etag = new Uint8Array(await crypto.subtle.digest('SHA-1', utf));
-					const compressed = brotli.compress(utf, 4096, 8);
+					const compressed = await this.#compressBrotliAsync(utf);
 					this.db.transaction(() => {
 						if (!this.db.fileExists(etag)) {
 							this.db.storeFile({
@@ -359,9 +411,13 @@ export class TiddlyPWASyncApp {
 	) {
 		if (
 			typeof token !== 'string' || !isValidAuthcode(authcode) || typeof now !== 'string' ||
-			typeof lastSync !== 'string' || (salt && typeof salt !== 'string') ||
-			!Array.isArray(clientChanges) ||
-			(ackPatches !== undefined && (!Array.isArray(ackPatches) || !ackPatches.every((p) => typeof p === 'string')))
+			typeof lastSync !== 'string' ||
+			(salt !== undefined && salt !== null && (typeof salt !== 'string' || salt.length > 256)) ||
+			!Array.isArray(clientChanges) || clientChanges.length > MAX_SYNC_CHANGES ||
+			(ackPatches !== undefined && (
+				!Array.isArray(ackPatches) || ackPatches.length > 500 ||
+				!ackPatches.every((p) => typeof p === 'string' && p.length >= 1 && p.length <= 256)
+			))
 		) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
@@ -379,6 +435,7 @@ export class TiddlyPWASyncApp {
 
 		const decodedChanges: Tiddler[] = [];
 		const seenThashes = new Set<string>();
+		let decodedTotalBytes = 0;
 		try {
 			for (const change of clientChanges) {
 				if (!change || typeof change !== 'object' || typeof change.thash !== 'string') {
@@ -386,11 +443,29 @@ export class TiddlyPWASyncApp {
 				}
 				const { thash, iv, ct, sbiv, sbct, mtime, deleted, baseMtime } = change;
 				const decodedThash = decodeBase64(thash);
+				if (decodedThash.byteLength < 1 || decodedThash.byteLength > 64) {
+					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+				}
 				const canonicalThash = encodeBase64(decodedThash);
 				if (seenThashes.has(canonicalThash)) {
 					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 				}
 				seenThashes.add(canonicalThash);
+				const decodedIv = iv ? decodeBase64(iv) : undefined;
+				const decodedCt = ct ? decodeBase64(ct) : undefined;
+				const decodedSbiv = sbiv ? decodeBase64(sbiv) : undefined;
+				const decodedSbct = sbct ? decodeBase64(sbct) : undefined;
+				if (
+					(decodedIv && (decodedIv.byteLength < 1 || decodedIv.byteLength > 64)) ||
+					(decodedSbiv && (decodedSbiv.byteLength < 1 || decodedSbiv.byteLength > 64))
+				) {
+					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+				}
+				decodedTotalBytes += decodedThash.byteLength + (decodedIv?.byteLength ?? 0) +
+					(decodedCt?.byteLength ?? 0) + (decodedSbiv?.byteLength ?? 0) + (decodedSbct?.byteLength ?? 0);
+				if (decodedTotalBytes > MAX_SYNC_DECODED_BYTES) {
+					return Response.json({ error: 'ETOOLARGE' }, { headers: respHdrs, status: 413 });
+				}
 				const itemMtime = mtime ? new Date(mtime) : new Date(0);
 				if (!Number.isFinite(itemMtime.getTime())) {
 					return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
@@ -406,10 +481,10 @@ export class TiddlyPWASyncApp {
 				}
 				decodedChanges.push({
 					thash: decodedThash,
-					iv: iv ? decodeBase64(iv) : undefined,
-					ct: ct ? decodeBase64(ct) : undefined,
-					sbiv: sbiv ? decodeBase64(sbiv) : undefined,
-					sbct: sbct ? decodeBase64(sbct) : undefined,
+					iv: decodedIv,
+					ct: decodedCt,
+					sbiv: decodedSbiv,
+					sbct: decodedSbct,
 					mtime: itemMtime,
 					deleted: Boolean(deleted),
 					baseMtime: itemBaseMtime,
@@ -420,116 +495,171 @@ export class TiddlyPWASyncApp {
 		}
 
 		// assuming here that the browser would use the same Accept-Encoding as when requesting the page
-		const apphtml = this.db.getWikiFile(token, 'app.html');
+		const apphtml = this.db.getExactWikiFile(token, 'app.html');
 		const [_, appEtag] = apphtml ? processEtag(apphtml.etag, headers) : [null, null];
 
-		const snapshotMaxMtime = this.db.maxMtime(token);
-		const tombstoneHorizon = this.db.getWikiTombstoneHorizon(token);
-		const tombstoneReset = modsince.getTime() > 0 && modsince.getTime() < tombstoneHorizon;
-		const effectiveSince = tombstoneReset ? new Date(0) : modsince;
-		const effectiveServerTimeMs = Math.max(snapshotMaxMtime, tombstoneReset ? tombstoneHorizon : 0);
-		const serverTimeDate = effectiveServerTimeMs > 0 ? new Date(effectiveServerTimeMs) : new Date(0);
+		let authFailed = false;
+		let hasWritten = false;
+		let snapshotMaxMtime = 0;
+		let tombstoneHorizon = 0;
+		let tombstoneReset = false;
+		let effectiveSinceMs = 0;
+		let effectiveServerTimeMs = 0;
+		const conflicts: string[] = [];
+		const successes: { thash: string; mtime: string }[] = [];
+		const preWriteRows: Tiddler[] = [];
+		const conflictRows: Tiddler[] = [];
+		let pendingPatches: Array<{ patchId: string; watcherId: string; patch: unknown; createdAt: number }> = [];
 
-		return streamsponse((ctrl) => {
-			ctrl.enqueue(`{"appEtag":${JSON.stringify(appEtag)},"serverChanges":[`);
+		this.db.transaction(() => {
+			const freshWiki = this.db.getWiki(token);
+			if (!freshWiki || (freshWiki.authcode && !constantTimeEqual(authcode, freshWiki.authcode))) {
+				authFailed = true;
+				return;
+			}
+			if (!freshWiki.authcode) this.db.bindWikiAuthcodeIfUnset(token, authcode);
+			if (!freshWiki.salt && typeof salt === 'string' && salt.length > 0) {
+				this.db.bindWikiSaltIfUnset(token, salt);
+			}
+			if (Array.isArray(ackPatches) && ackPatches.length > 0) {
+				this.db.deletePendingPatches(token, ackPatches as string[]);
+			}
 
-			let hasWritten = false;
-			const conflicts: string[] = [];
-			const successes: { thash: string; mtime: string }[] = [];
-			let pendingPatches: Array<{ patchId: string; watcherId: string; patch: unknown; createdAt: number }> = [];
+			snapshotMaxMtime = this.db.maxMtime(token);
+			tombstoneHorizon = this.db.getWikiTombstoneHorizon(token);
+			tombstoneReset = modsince.getTime() > 0 && modsince.getTime() < tombstoneHorizon;
+			effectiveSinceMs = tombstoneReset ? 0 : modsince.getTime();
+			effectiveServerTimeMs = Math.max(snapshotMaxMtime, tombstoneReset ? tombstoneHorizon : 0);
 
-			this.db.transaction(() => {
-				const freshWiki = this.db.getWiki(token);
-				if (!freshWiki || (freshWiki.authcode && !constantTimeEqual(authcode, freshWiki.authcode))) {
-					throw new Error('EAUTH');
-				}
-				if (!freshWiki.authcode) this.db.bindWikiAuthcodeIfUnset(token, authcode);
-				if (!freshWiki.salt && typeof salt === 'string' && salt.length > 0) {
-					this.db.bindWikiSaltIfUnset(token, salt);
-				}
-				if (Array.isArray(ackPatches) && ackPatches.length > 0) {
-					this.db.deletePendingPatches(token, ackPatches as string[]);
-				}
-				let firstWritten = false;
-				const streamedHashes = new Set<string>();
-
-				for (
-					const { thash, iv, ct, sbiv, sbct, mtime, deleted } of this.db.tiddlersChangedSince(token, effectiveSince)
-				) {
-					const b64hash = thash ? encodeBase64(thash) : null;
-					if (b64hash) streamedHashes.add(b64hash);
-					ctrl.enqueue(
-						(firstWritten ? '\n,' : '\n') + JSON.stringify({
-							thash: b64hash,
-							iv: iv ? encodeBase64(iv) : null,
-							ct: ct ? encodeBase64(ct) : null,
-							sbiv: sbiv ? encodeBase64(sbiv) : null,
-							sbct: sbct ? encodeBase64(sbct) : null,
-							mtime,
-							deleted,
-						}),
-					);
-					if (!firstWritten) firstWritten = true;
-				}
-				const batchWriteTimeMs = Math.max(Date.now(), this.db.maxMtime(token) + 1);
-				for (const change of decodedChanges) {
-					const res = this.db.upsertTiddler(token, change, batchWriteTimeMs);
-					if (res.conflict) {
-						const b64hash = encodeBase64(change.thash);
-						conflicts.push(b64hash);
-						if (!streamedHashes.has(b64hash)) {
-							const existingTid = this.db.getTiddler(token, change.thash);
-							if (existingTid) {
-								streamedHashes.add(b64hash);
-								ctrl.enqueue(
-									(firstWritten ? '\n,' : '\n') + JSON.stringify({
-										thash: b64hash,
-										iv: existingTid.iv ? encodeBase64(existingTid.iv) : null,
-										ct: existingTid.ct ? encodeBase64(existingTid.ct) : null,
-										sbiv: existingTid.sbiv ? encodeBase64(existingTid.sbiv) : null,
-										sbct: existingTid.sbct ? encodeBase64(existingTid.sbct) : null,
-										mtime: existingTid.mtime,
-										deleted: existingTid.deleted,
-									}),
-								);
-								if (!firstWritten) firstWritten = true;
-							}
-						}
-					} else if (res.success) {
-						hasWritten = true;
-						successes.push({ thash: encodeBase64(change.thash), mtime: new Date(batchWriteTimeMs).toISOString() });
+			const batchWriteTimeMs = Math.max(Date.now(), snapshotMaxMtime + 1);
+			for (const change of decodedChanges) {
+				const existingBefore = this.db.getTiddler(token, change.thash);
+				const res = this.db.upsertTiddler(token, change, batchWriteTimeMs);
+				if (res.conflict) {
+					const b64hash = encodeBase64(change.thash);
+					conflicts.push(b64hash);
+					if (existingBefore) {
+						conflictRows.push(existingBefore);
+					}
+				} else if (res.success) {
+					hasWritten = true;
+					successes.push({ thash: encodeBase64(change.thash), mtime: new Date(batchWriteTimeMs).toISOString() });
+					if (
+						existingBefore &&
+						existingBefore.mtime.getTime() > effectiveSinceMs &&
+						existingBefore.mtime.getTime() <= snapshotMaxMtime
+					) {
+						preWriteRows.push(existingBefore);
 					}
 				}
-				const rawPatches = this.db.listPendingPatches(token);
-				if (rawPatches.length > 0) {
-					pendingPatches = rawPatches.map((row) => {
-						let parsed: unknown = null;
-						try {
-							parsed = JSON.parse(row.patch_json);
-						} catch (_e) {
-							parsed = null;
-						}
-						return {
-							patchId: row.patch_id,
-							watcherId: row.watcher_id,
-							patch: parsed,
-							createdAt: row.created_at,
-						};
-					});
-				}
-			});
-			let trailer = '\n]';
-			if (tombstoneReset) trailer += ',"tombstoneReset":true';
-			if (conflicts.length > 0) trailer += `,"conflicts":${JSON.stringify(conflicts)}`;
-			if (successes.length > 0) trailer += `,"successes":${JSON.stringify(successes)}`;
-			if (pendingPatches.length > 0) trailer += `,"pendingPatches":${JSON.stringify(pendingPatches)}`;
-			trailer += '}';
-			ctrl.enqueue(trailer);
-			ctrl.close();
-			if (hasWritten && typeof browserToken === 'string') notifyMonitors(token, browserToken);
-		}, {
-			headers: { ...respHdrs, 'content-type': 'application/json', 'x-server-time': serverTimeDate.toISOString() },
+			}
+
+			const rawPatches = this.db.listPendingPatches(token);
+			if (rawPatches.length > 0) {
+				pendingPatches = rawPatches.map((row) => {
+					let parsed: unknown = null;
+					try {
+						parsed = JSON.parse(row.patch_json);
+					} catch (_e) {
+						parsed = null;
+					}
+					return {
+						patchId: row.patch_id,
+						watcherId: row.watcher_id,
+						patch: parsed,
+						createdAt: row.created_at,
+					};
+				});
+			}
 		});
+
+		if (authFailed) {
+			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
+		}
+		if (hasWritten && typeof browserToken === 'string') {
+			notifyMonitors(token, browserToken);
+		}
+		const serverTimeDate = effectiveServerTimeMs > 0 ? new Date(effectiveServerTimeMs) : new Date(0);
+
+		const PAGE_SIZE = 16;
+		let firstWritten = false;
+		const streamedHashes = new Set<string>();
+		let cursorMtime = effectiveSinceMs;
+		let cursorThash: Uint8Array | null = null;
+		let pagesDone = effectiveSinceMs >= snapshotMaxMtime;
+		let finished = false;
+
+		const formatTid = (tid: Tiddler): string | null => {
+			const b64hash = tid.thash ? encodeBase64(tid.thash) : null;
+			if (b64hash) {
+				if (streamedHashes.has(b64hash)) return null;
+				streamedHashes.add(b64hash);
+			}
+			const prefix = firstWritten ? '\n,' : '\n';
+			firstWritten = true;
+			return prefix + JSON.stringify({
+				thash: b64hash,
+				iv: tid.iv ? encodeBase64(tid.iv) : null,
+				ct: tid.ct ? encodeBase64(tid.ct) : null,
+				sbiv: tid.sbiv ? encodeBase64(tid.sbiv) : null,
+				sbct: tid.sbct ? encodeBase64(tid.sbct) : null,
+				mtime: tid.mtime,
+				deleted: tid.deleted,
+			});
+		};
+
+		return streamsponse(
+			(ctrl) => {
+				ctrl.enqueue(`{"appEtag":${JSON.stringify(appEtag)},"serverChanges":[`);
+			},
+			(ctrl) => {
+				if (finished) return;
+				while (!pagesDone) {
+					const page = this.db.tiddlersChangedPage(token, cursorMtime, cursorThash, snapshotMaxMtime, PAGE_SIZE);
+					if (page.length === 0) {
+						pagesDone = true;
+						break;
+					}
+					let chunk = '';
+					for (const tid of page) {
+						const line = formatTid(tid);
+						if (line) chunk += line;
+					}
+					const last = page[page.length - 1];
+					cursorMtime = last.mtime.getTime();
+					cursorThash = last.thash;
+					if (page.length < PAGE_SIZE) {
+						pagesDone = true;
+					}
+					if (chunk) {
+						ctrl.enqueue(chunk);
+						return;
+					}
+				}
+
+				finished = true;
+				let extraChunk = '';
+				for (const tid of preWriteRows) {
+					const line = formatTid(tid);
+					if (line) extraChunk += line;
+				}
+				for (const tid of conflictRows) {
+					const line = formatTid(tid);
+					if (line) extraChunk += line;
+				}
+				let trailer = '\n]';
+				if (tombstoneReset) trailer += ',"tombstoneReset":true';
+				if (conflicts.length > 0) trailer += `,"conflicts":${JSON.stringify(conflicts)}`;
+				if (successes.length > 0) trailer += `,"successes":${JSON.stringify(successes)}`;
+				if (pendingPatches.length > 0) trailer += `,"pendingPatches":${JSON.stringify(pendingPatches)}`;
+				trailer += '}';
+				ctrl.enqueue(extraChunk + trailer);
+				ctrl.close();
+			},
+			{
+				headers: { ...respHdrs, 'content-type': 'application/json', 'x-server-time': serverTimeDate.toISOString() },
+			},
+		);
 	}
 
 	@getWiki('EAUTH')
@@ -551,7 +681,7 @@ export class TiddlyPWASyncApp {
 
 	@adminAuth
 	handleCreate({ note }: Record<string, unknown>): Response | Promise<Response> {
-		if (note !== undefined && typeof note !== 'string') {
+		if (note !== undefined && (typeof note !== 'string' || note.length > 1024)) {
 			return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 		}
 		const token = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
@@ -703,6 +833,9 @@ export class TiddlyPWASyncApp {
 				iv: (payload as Record<string, unknown>).iv,
 				ct: (payload as Record<string, unknown>).ct,
 			};
+			if (JSON.stringify(envelope).length > 8192) {
+				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
+			}
 		} else {
 			envelope = {
 				mode: 'plain',
@@ -1146,6 +1279,19 @@ export class TiddlyPWASyncApp {
 		});
 	}
 
+	#decompressBrotliAsync(compressed: Uint8Array): Promise<Uint8Array> {
+		return new Promise<Uint8Array>((resolve, reject) => {
+			brotliDecompress(
+				compressed,
+				{ maxOutputLength: MAX_DECOMPRESS_BYTES },
+				(err, out) => {
+					if (err) reject(err);
+					else resolve(new Uint8Array(out.buffer, out.byteOffset, out.byteLength));
+				},
+			);
+		});
+	}
+
 	#getClientIp(req: Request, info?: Deno.ServeHandlerInfo): string {
 		if (this.trustProxy) {
 			const xff = req.headers.get('x-forwarded-for');
@@ -1265,7 +1411,13 @@ export class TiddlyPWASyncApp {
 		} else if (this.db.maxMtime(token) > 0 || Boolean((wiki as Wiki).salt)) {
 			return Response.json({ error: 'EAUTH' }, { headers: respHdrs, status: 401 });
 		}
-		const uploads = await Promise.all(
+		const uploads: Array<{
+			filename: string;
+			etag: Uint8Array;
+			utf: Uint8Array;
+			ctype: string;
+			compressed: Uint8Array | null;
+		}> = await Promise.all(
 			fileEntries.map(async ([filename, value]) => {
 				const { body } = value as any;
 				const utf = utfenc.encode(body);
@@ -1275,19 +1427,34 @@ export class TiddlyPWASyncApp {
 				return { filename, etag, utf, ctype: ALLOWED_APP_FILENAMES[filename], compressed };
 			}),
 		);
-		this.db.transaction(() => {
-			for (const { filename, etag, utf, ctype, compressed } of uploads) {
-				if (compressed && !this.db.fileExists(etag)) {
-					this.db.storeFile({
-						etag,
-						rawsize: utf.length,
-						ctype,
-						body: compressed,
-					});
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const missingToCompress: typeof uploads = [];
+			this.db.transaction(() => {
+				for (const item of uploads) {
+					if (!this.db.fileExists(item.etag) && !item.compressed) {
+						missingToCompress.push(item);
+					}
 				}
-				this.db.associateFile(token, etag, filename);
-			}
-		});
+				if (missingToCompress.length > 0) return;
+				for (const { filename, etag, utf, ctype, compressed } of uploads) {
+					if (compressed && !this.db.fileExists(etag)) {
+						this.db.storeFile({
+							etag,
+							rawsize: utf.length,
+							ctype,
+							body: compressed,
+						});
+					}
+					this.db.associateFile(token, etag, filename);
+				}
+			});
+			if (missingToCompress.length === 0) break;
+			await Promise.all(
+				missingToCompress.map(async (item) => {
+					item.compressed = await this.#compressBrotliAsync(item.utf);
+				}),
+			);
+		}
 		if (typeof browserToken === 'string') notifyMonitors(token, browserToken);
 		return Response.json({ urlprefix: token.slice(0, token.length / 2) + '/' }, { headers: respHdrs, status: 200 });
 	}
@@ -1415,7 +1582,7 @@ export class TiddlyPWASyncApp {
 	}
 
 	@route(['GET', 'HEAD', 'OPTIONS'], '/:halftoken/:filename', (g) => g.filename === 'tid.dly')
-	handleAppFile(req: Request, { halftoken, filename }: Record<string, string>) {
+	async handleAppFile(req: Request, { halftoken, filename }: Record<string, string>) {
 		if (!halftoken || halftoken.length < 21 || !/^[A-Za-z0-9_-]+$/.test(halftoken)) {
 			return Response.json({ error: 'EEXIST' }, { headers: respHdrs, status: 404 });
 		}
@@ -1472,7 +1639,7 @@ export class TiddlyPWASyncApp {
 		} else {
 			headers.set('content-length', file.rawsize.toString());
 			if (req.method !== 'HEAD') {
-				body = brotli.decompress(file.body);
+				body = await this.#decompressBrotliAsync(file.body);
 			}
 		}
 		return new Response(body as unknown as BodyInit, { headers });
@@ -1486,8 +1653,11 @@ export class TiddlyPWASyncApp {
 		if (req.method === 'POST') {
 			let data: any;
 			try {
-				data = await req.json();
-			} catch (_e) {
+				data = await readJsonBounded(req, this.maxBodyBytes);
+			} catch (e) {
+				if (e instanceof BodyTooLargeError) {
+					return Response.json({ error: 'ETOOLARGE' }, { headers: respHdrs, status: 413 });
+				}
 				return Response.json({ error: 'EPROTO' }, { headers: respHdrs, status: 400 });
 			}
 			if (typeof data !== 'object' || !data || data.tiddlypwa !== 1 || !data.op) {
@@ -1558,7 +1728,7 @@ export class TiddlyPWASyncApp {
 				effectiveReq = new Request(url.toString(), req);
 			}
 		}
-		return this.handleAppFile(effectiveReq, {/* XXX: decorators 2 don't affect types.. */}) ||
+		return (await this.handleAppFile(effectiveReq, {/* XXX: decorators 2 don't affect types.. */})) ||
 			await this.handleApiEndpoint(effectiveReq, undefined, info) ||
 			this.handleHomePage(effectiveReq) ||
 			Response.json({}, { headers: respHdrs, status: 404 });

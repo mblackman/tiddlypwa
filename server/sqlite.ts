@@ -30,18 +30,35 @@ function normalizeParams(params?: Record<string, unknown>): BindParams | undefin
 	return out;
 }
 
+function computePrefixUpperBound(prefix: string): string | null {
+	if (!prefix) return null;
+	for (let i = prefix.length - 1; i >= 0; i--) {
+		const code = prefix.charCodeAt(i);
+		if (code < 0xd7ff) {
+			return prefix.slice(0, i) + String.fromCharCode(code + 1);
+		}
+	}
+	return null;
+}
+
 export class SQLiteDatastore implements Datastore {
 	#db: DatabaseSync;
+	#isFileBacked: boolean;
 	#changes = 0;
 	#txnDepth = 0;
 	#savepointSeq = 0;
 	#closed = false;
+	#stmtCache: Map<string, StatementSync> = new Map();
+	#arrayStmtCache: Map<string, StatementSync> = new Map();
 
 	#getConfigStmt: StatementSync;
 	#wikiStmt: StatementSync;
 	#wikiPrefixStmt: StatementSync;
 	#wikiFileStmt: StatementSync;
+	#wikiExactFileStmt: StatementSync;
 	#changedStmt: StatementSync;
+	#changedPageFirstStmt: StatementSync;
+	#changedPageNextStmt: StatementSync;
 	#tiddlerStmt: StatementSync;
 	#maxMtimeStmt: StatementSync;
 	#insertStmt: StatementSync;
@@ -49,29 +66,57 @@ export class SQLiteDatastore implements Datastore {
 	#updateWithMtimeStmt: StatementSync;
 
 	constructor(path = ':memory:') {
+		this.#isFileBacked = path !== ':memory:';
 		this.#db = new DatabaseSync(path);
-		if (path !== ':memory:') {
-			this.#db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
+		if (this.#isFileBacked) {
+			this.#db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA journal_size_limit = 67108864;');
 		}
-		this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+		this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA trusted_schema = OFF;');
 		this.migrate();
 
 		this.#getConfigStmt = this.#prep(sql`SELECT value FROM server_config WHERE key = :key`);
 		this.#wikiStmt = this.#prep(
 			sql`SELECT token, authcode, salt, note, watcher_pubkey, tombstone_horizon, last_mtime FROM wikis WHERE token = :token`,
 		);
-		this.#wikiPrefixStmt = this.#prep(
-			sql`SELECT token, authcode, salt, note, watcher_pubkey, tombstone_horizon, last_mtime FROM wikis WHERE substr(token, 1, length(:halftoken)) = :halftoken`,
-		);
+		this.#wikiPrefixStmt = this.#prep(sql`
+			SELECT token, authcode, salt, note, watcher_pubkey, tombstone_horizon, last_mtime
+			FROM wikis
+			WHERE token >= :halftoken AND token < :upperBound
+			ORDER BY token ASC
+			LIMIT 1
+		`);
 		this.#wikiFileStmt = this.#prep(sql`
 			SELECT files.etag AS etag, rawsize, ctype, body
 			FROM files, wikifiles
-			WHERE files.etag = wikifiles.etag AND wikifiles.name = :name AND substr(wikifiles.token, 1, length(:halftoken)) = :halftoken
+			WHERE files.etag = wikifiles.etag AND wikifiles.name = :name
+				AND wikifiles.token >= :halftoken AND wikifiles.token < :upperBound
+			ORDER BY wikifiles.token ASC
+			LIMIT 1
+		`);
+		this.#wikiExactFileStmt = this.#prep(sql`
+			SELECT files.etag AS etag, rawsize, ctype, body
+			FROM files, wikifiles
+			WHERE files.etag = wikifiles.etag AND wikifiles.name = :name AND wikifiles.token = :token
 		`);
 		this.#changedStmt = this.#prep(sql`
 			SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
 			FROM tiddlers WHERE mtime > :modsince AND token = :token
 			ORDER BY mtime ASC
+		`);
+		this.#changedPageFirstStmt = this.#prep(sql`
+			SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
+			FROM tiddlers
+			WHERE token = :token AND mtime > :afterMtime AND mtime <= :upperBound
+			ORDER BY mtime ASC, thash ASC
+			LIMIT :limit
+		`);
+		this.#changedPageNextStmt = this.#prep(sql`
+			SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
+			FROM tiddlers
+			WHERE token = :token AND mtime <= :upperBound
+				AND (mtime > :afterMtime OR (mtime = :afterMtime AND thash > :afterThash))
+			ORDER BY mtime ASC, thash ASC
+			LIMIT :limit
 		`);
 		this.#tiddlerStmt = this.#prep(sql`
 			SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
@@ -113,6 +158,19 @@ export class SQLiteDatastore implements Datastore {
 		return stmt;
 	}
 
+	#prepCached(cache: Map<string, StatementSync>, queryStr: string, returnArrays = false): StatementSync {
+		let stmt = cache.get(queryStr);
+		if (!stmt) {
+			if (cache.size >= 256) cache.clear();
+			stmt = this.#prep(queryStr);
+			if (returnArrays && stmt.columns().length > 0) {
+				(stmt as unknown as { setReturnArrays(enabled: boolean): void }).setReturnArrays(true);
+			}
+			cache.set(queryStr, stmt);
+		}
+		return stmt;
+	}
+
 	get changes(): number {
 		return this.#changes;
 	}
@@ -122,14 +180,13 @@ export class SQLiteDatastore implements Datastore {
 	}
 
 	query<T = unknown[]>(queryStr: string, params?: Record<string, unknown>): T[] {
-		const stmt = this.#prep(queryStr);
+		const stmt = this.#prepCached(this.#arrayStmtCache, queryStr, true);
 		const bound = normalizeParams(params);
 		if (stmt.columns().length === 0) {
 			const info = bound ? stmt.run(bound) : stmt.run();
 			this.#changes = Number(info.changes);
 			return [];
 		}
-		(stmt as unknown as { setReturnArrays(enabled: boolean): void }).setReturnArrays(true);
 		return (bound ? stmt.all(bound) : stmt.all()) as T[];
 	}
 
@@ -137,7 +194,7 @@ export class SQLiteDatastore implements Datastore {
 		queryStr: string,
 		params?: Record<string, unknown>,
 	): T[] {
-		const stmt = this.#prep(queryStr);
+		const stmt = this.#prepCached(this.#stmtCache, queryStr, false);
 		const bound = normalizeParams(params);
 		const rows = (bound ? stmt.all(bound) : stmt.all()) as Record<string, unknown>[];
 		return rows.map((r) => ({ ...r }) as T);
@@ -147,7 +204,7 @@ export class SQLiteDatastore implements Datastore {
 		const depth = this.#txnDepth;
 		this.#txnDepth++;
 		if (depth === 0) {
-			this.#db.exec('BEGIN');
+			this.#db.exec('BEGIN IMMEDIATE');
 			try {
 				f();
 				this.#db.exec('COMMIT');
@@ -183,7 +240,31 @@ export class SQLiteDatastore implements Datastore {
 	close(_force?: boolean): void {
 		if (this.#closed) return;
 		this.#closed = true;
+		this.#stmtCache.clear();
+		this.#arrayStmtCache.clear();
 		this.#db.close();
+	}
+
+	healthCheck(): boolean {
+		if (this.#closed) return false;
+		try {
+			const row = this.query<[number]>('SELECT 1');
+			return row.length > 0 && row[0][0] === 1;
+		} catch (_e) {
+			return false;
+		}
+	}
+
+	checkpointAndClose(): void {
+		if (this.#closed) return;
+		if (this.#isFileBacked) {
+			try {
+				this.#db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+			} catch (_e) {
+				// ignore checkpoint failures on shutdown
+			}
+		}
+		this.close();
 	}
 
 	migrate() {
@@ -368,6 +449,8 @@ export class SQLiteDatastore implements Datastore {
 				PRAGMA user_version = 5;
 				COMMIT;
 			`);
+			this.#stmtCache.clear();
+			this.#arrayStmtCache.clear();
 		}
 	}
 
@@ -389,7 +472,9 @@ export class SQLiteDatastore implements Datastore {
 	}
 
 	getWikiByPrefix(halftoken: string): Wiki | undefined {
-		const row = this.#wikiPrefixStmt.get({ halftoken }) as Wiki | undefined;
+		const upperBound = computePrefixUpperBound(halftoken);
+		if (!upperBound) return undefined;
+		const row = this.#wikiPrefixStmt.get({ halftoken, upperBound }) as Wiki | undefined;
 		return row ? { ...row } : undefined;
 	}
 
@@ -498,12 +583,19 @@ export class SQLiteDatastore implements Datastore {
 	}
 
 	getWikiFile(halftoken: string, name: string): File | undefined {
-		const row = this.#wikiFileStmt.get({ halftoken, name }) as File | undefined;
+		const upperBound = computePrefixUpperBound(halftoken);
+		if (!upperBound) return undefined;
+		const row = this.#wikiFileStmt.get({ halftoken, upperBound, name }) as File | undefined;
+		return row ? { ...row } : undefined;
+	}
+
+	getExactWikiFile(token: string, name: string): File | undefined {
+		const row = this.#wikiExactFileStmt.get({ token, name }) as File | undefined;
 		return row ? { ...row } : undefined;
 	}
 
 	*tiddlersChangedSince(token: string, since: Date) {
-		const rows = this.#changedStmt.all({ modsince: since.getTime(), token }) as Array<{
+		const iter = this.#changedStmt.iterate({ modsince: since.getTime(), token }) as IterableIterator<{
 			thash: Uint8Array;
 			iv?: Uint8Array;
 			ct?: Uint8Array;
@@ -512,9 +604,41 @@ export class SQLiteDatastore implements Datastore {
 			mtime: number;
 			deleted: number;
 		}>;
-		for (const tiddler of rows) {
+		for (const tiddler of iter) {
 			yield { ...tiddler, mtime: parseTime(tiddler.mtime), deleted: !!tiddler.deleted };
 		}
+	}
+
+	tiddlersChangedPage(
+		token: string,
+		afterMtimeMs: number,
+		afterThash: Uint8Array | null,
+		upperBoundMs: number,
+		limit: number,
+	): Tiddler[] {
+		const rows = (afterThash === null
+			? this.#changedPageFirstStmt.all({
+				token,
+				afterMtime: afterMtimeMs,
+				upperBound: upperBoundMs,
+				limit,
+			})
+			: this.#changedPageNextStmt.all({
+				token,
+				afterMtime: afterMtimeMs,
+				afterThash,
+				upperBound: upperBoundMs,
+				limit,
+			})) as Array<{
+				thash: Uint8Array;
+				iv?: Uint8Array;
+				ct?: Uint8Array;
+				sbiv?: Uint8Array;
+				sbct?: Uint8Array;
+				mtime: number;
+				deleted: number;
+			}>;
+		return rows.map((r) => ({ ...r, mtime: parseTime(r.mtime), deleted: !!r.deleted }));
 	}
 
 	getTiddler(token: string, thash: Uint8Array): Tiddler | undefined {

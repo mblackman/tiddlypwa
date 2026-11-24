@@ -1,6 +1,6 @@
+import { brotliCompressSync, constants as zlibConstants } from 'node:zlib';
 import { SQLiteDatastore } from './sqlite.ts';
 import { parseArgs } from '@std/cli/parse-args';
-import * as brotli from 'brotli';
 
 export async function updateWikiFiles(dbPath = '.data/tiddly.db', targetToken?: string) {
 	const db = new SQLiteDatastore(dbPath);
@@ -16,7 +16,8 @@ export async function updateWikiFiles(dbPath = '.data/tiddly.db', targetToken?: 
 	for (const f of filesToStore) {
 		const raw = Deno.readFileSync(f.path);
 		const etag = new Uint8Array(await crypto.subtle.digest('SHA-1', raw));
-		const compressed = brotli.compress(raw, 4096, 8);
+		const compressedBuf = brotliCompressSync(raw, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 8 } });
+		const compressed = new Uint8Array(compressedBuf.buffer, compressedBuf.byteOffset, compressedBuf.byteLength);
 		processedFiles.push({
 			name: f.name,
 			etag,

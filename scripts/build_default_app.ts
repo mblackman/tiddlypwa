@@ -1,4 +1,4 @@
-import * as brotli from 'brotli';
+import { brotliCompressSync, constants as zlibConstants } from 'node:zlib';
 import { encodeBase64Url } from '@std/encoding/base64url';
 
 function extractCoreVersion(appHtml: string): string {
@@ -17,7 +17,8 @@ await Deno.mkdir('server/default_app', { recursive: true });
 for (const f of files) {
 	const raw = await Deno.readFile(f.src);
 	const etag = encodeBase64Url(new Uint8Array(await crypto.subtle.digest('SHA-1', raw)));
-	const compressed = brotli.compress(raw, 4096, 8);
+	const compressedBuf = brotliCompressSync(raw, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 8 } });
+	const compressed = new Uint8Array(compressedBuf.buffer, compressedBuf.byteOffset, compressedBuf.byteLength);
 	const meta: Record<string, unknown> = {
 		etag,
 		rawsize: raw.length,

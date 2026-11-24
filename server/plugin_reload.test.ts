@@ -377,7 +377,7 @@ Deno.test('Plugin Deletion Flow: unregisterPluginTiddlers removes deleted plugin
 Deno.test('Server upgradeStoredWikiCorePlugins: upgrades outdated tiddlypwa in custom wikis while preserving user plugins', async () => {
 	const { SQLiteDatastore } = await import('./sqlite.ts');
 	const { TiddlyPWASyncApp } = await import('./app.ts');
-	const brotli = await import('brotli');
+	const { brotliDecompressSync } = await import('node:zlib');
 
 	const db = new SQLiteDatastore();
 	const app = new TiddlyPWASyncApp(
@@ -401,7 +401,7 @@ Deno.test('Server upgradeStoredWikiCorePlugins: upgrades outdated tiddlypwa in c
 
 	// Build a custom app.html simulating an older wiki with tiddlypwa 0.2.2 + a custom user plugin
 	const defaultApp = app.defaultAppFiles.get('app.html')!;
-	const defaultHtml = new TextDecoder().decode(brotli.decompress(defaultApp.body));
+	const defaultHtml = new TextDecoder().decode(brotliDecompressSync(defaultApp.body));
 	const storeTag = '<script class="tiddlywiki-tiddler-store" type="application/json">';
 	const sIdx = defaultHtml.indexOf(storeTag);
 	const eIdx = defaultHtml.indexOf('</script>', sIdx);

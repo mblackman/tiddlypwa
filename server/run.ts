@@ -43,10 +43,15 @@ export async function listen(args: any) {
 	}
 	const allowCustomAppUpload = envvar('ALLOW_CUSTOM_APP_UPLOAD') === 'true';
 	const trustProxy = envvar('TRUST_PROXY') === 'true';
+	const maxBodyEnv = envvar('MAX_BODY_BYTES');
+	const maxBodyBytes = maxBodyEnv !== undefined && Number.isFinite(Number(maxBodyEnv)) && Number(maxBodyEnv) > 0
+		? Number(maxBodyEnv)
+		: undefined;
 	const db = new SQLiteDatastore(dbPath);
 	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath, vapidSubject, {
 		allowCustomAppUpload,
 		trustProxy,
+		maxBodyBytes,
 	});
 	await app.ensureVapidKeys();
 	await app.loadDefaultApp();

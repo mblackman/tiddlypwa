@@ -78,8 +78,51 @@ Deno.test('P1-5: file-backed SQLiteDatastore uses native WAL mode, foreign_keys,
 		});
 		assertEquals(Boolean(db.getWiki('outer-wiki')), true);
 		assertEquals(db.getWiki('inner-wiki'), undefined);
+
+		const jsl = db.query<[number]>('PRAGMA journal_size_limit')[0][0];
+		assertEquals(jsl, 67108864);
+		const ts = db.query<[number]>('PRAGMA trusted_schema')[0][0];
+		assertEquals(ts, 0);
+		assertEquals(db.healthCheck(), true);
 	} finally {
-		db.close(true);
+		db.checkpointAndClose();
 		Deno.removeSync(dir, { recursive: true });
 	}
+});
+
+Deno.test('Batch 4 sqlite: tiddlersChangedPage keyset pagination handles duplicate mtimes with zero skips or duplicates', () => {
+	const db = new SQLiteDatastore();
+	const tok = 'wiki-keyset-page-token';
+	db.createWiki(tok);
+
+	for (let i = 0; i < 45; i++) {
+		const thash = new Uint8Array(32);
+		thash[0] = (i * 37) & 0xff;
+		thash[1] = i;
+		const mtimeMs = i < 25 ? 1000 : 1000 + (i % 7);
+		db.upsertTiddler(tok, {
+			thash,
+			ct: new Uint8Array([i]),
+			mtime: new Date(mtimeMs),
+			deleted: false,
+		}, mtimeMs);
+	}
+
+	const collected: Array<{ thashHex: string; mtime: number }> = [];
+	let cursorMtime = 0;
+	let cursorThash: Uint8Array | null = null;
+	while (true) {
+		const page = db.tiddlersChangedPage(tok, cursorMtime, cursorThash, 2000, 16);
+		if (page.length === 0) break;
+		for (const item of page) {
+			collected.push({ thashHex: Array.from(item.thash).join(','), mtime: item.mtime.getTime() });
+		}
+		const last = page[page.length - 1];
+		cursorMtime = last.mtime.getTime();
+		cursorThash = last.thash;
+		if (page.length < 16) break;
+	}
+
+	assertEquals(collected.length, 45);
+	assertEquals(new Set(collected.map((c) => c.thashHex)).size, 45);
 });
