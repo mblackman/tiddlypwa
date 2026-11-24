@@ -30,13 +30,7 @@ Licensed under 0BSD, see license.tid.
 .tpwadoc-card-push {--bg:#c3f7d4;}
 .tpwadoc-card-github, .tpwadoc-card-codeberg {--bg:#b8aeff;}
 .tpwadoc-card-patreon {--bg:#ffab91;}
-.tpwadoc-card-glitch {--bg:#ff7698;}
 .tpwadoc-card-diy {--bg:#eaeaea;}
 
 .tpwadoc-card-try input, .tpwadoc-card-try button { margin: 0 .25em; padding: .5em; border-radius: 4px; background: #ffedda; color: #333; border: 1px solid #49411f; margin-top: 0.5rem; }
 .tpwadoc-card-try button:hover { background: #f0e0d0; }
-.tpwadoc-card-try form div { line-height: 2.5; margin-top: .5em; }
-.tpwa-visited-wiki { display: inline-block; vertical-align: baseline; padding: .2em .5em; margin: 0 .25em; line-height: 1; border-radius: 6px; background: color-mix(in srgb, var(--bg) 80%, #cacaca); }
-.tpwa-visited-wiki:hover { background: color-mix(in srgb, var(--bg) 90%, #444); }
-.tpwa-visited-wiki button { padding: 0.15em 0.35em; margin: 0 0 0 .5em; border: none; vertical-align: baseline; border-radius: 3px; background: none; }
-.tpwa-visited-wiki button:hover { background: color-mix(in srgb, var(--bg) 90%, #ff0000); }

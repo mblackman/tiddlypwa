@@ -1,19 +1,19 @@
 title: PushNotifications
 tags: [[TiddlyPWA Docs]]
 
-TiddlyPWA supports **Web Push Notifications** and a three-tier extension system so you can build background watchers, due-date reminders, and interactive timers right inside your own TiddlyWiki.
+TiddlyPWA supports ''Web Push Notifications'' and a three-tier extension system so you can build background watchers, due-date reminders, and interactive timers right inside your own TiddlyWiki.
 
 !! Enabling Push on Your Device
 
-# Open `$:/ControlPanel` → **TiddlyPWA** → **Push Notifications**.
-# Click **Enable Push Notifications** and grant browser permission.
-# Use **Send Test Notification** to verify delivery.
+# Open `$:/ControlPanel` → ''TiddlyPWA'' → ''Push Notifications''.
+# Click ''Enable Push Notifications'' and grant browser permission.
+# Use ''Send Test Notification'' to verify delivery.
 
 !! Choosing a Notification Tier
 
-* **Tier 1 — Server Watchers (`module-type: pwa-watcher`)**: Sandboxed JavaScript ES modules synced to your server and executed on a cron schedule (for RSS/Atom feeds, JSON APIs, or web page scraping while your devices are offline).
-* **Tier 2 — Declarative Due-Date Rules (`$:/tags/NotificationRule`)**: Zero-knowledge, client-encrypted notifications automatically scheduled from tiddler filters and date fields (e.g. `due`).
-* **Tier 3 — Ad-Hoc Widget Messages (`tm-pwa-schedule-notification`)**: Zero-knowledge, client-encrypted one-off timers and reminders triggered from wikitext `<$button>` actions or JavaScript.
+* ''Tier 1 - Server Watchers (`module-type: pwa-watcher`)'': Sandboxed JavaScript ES modules synced to your server and executed on a cron schedule (for RSS/Atom feeds, JSON APIs, or web page scraping while your devices are offline).
+* ''Tier 2 - Declarative Due-Date Rules (`$:/tags/NotificationRule`)'': Zero-knowledge, client-encrypted notifications automatically scheduled from tiddler filters and date fields (e.g. `due`).
+* ''Tier 3 - Ad-Hoc Widget Messages (`tm-pwa-schedule-notification`)'': Zero-knowledge, client-encrypted one-off timers and reminders triggered from wikitext `<$button>` actions or JavaScript.
 
 !! Tier 1: Server Watchers (`module-type: pwa-watcher`)
 

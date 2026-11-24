@@ -20,54 +20,20 @@ Formatted with `deno fmt`.
 		render(parent, nextSibling) {
 			this.computeAttributes();
 			if (parent) this.#parent = parent;
-			const form = this.document.createElement('form');
-			const input = this.document.createElement('input');
-			input.placeholder = 'test';
-			form.appendChild(input);
-			const button = this.document.createElement('button');
-			button.textContent = 'Go!';
-			form.appendChild(button);
-			let visited = [];
-			try {
-				visited = JSON.parse(localStorage.visitedWikis || '[]');
-				if (!Array.isArray(visited)) visited = [];
-			} catch (_e) {
-				visited = [];
-			}
-			if (visited.length > 0) {
-				const vdiv = this.document.createElement('div');
-				vdiv.textContent = 'Recently visited: ';
-				for (const slug of visited) {
-					const wlink = this.document.createElement('a');
-					wlink.className = 'tpwa-visited-wiki';
-					wlink.href = `/w/${slug}/app.html`;
-					wlink.textContent = decodeURIComponent(slug);
-					const del = this.document.createElement('button');
-					del.textContent = '✗';
-					del.onclick = (e) => {
-						e.stopPropagation();
-						e.preventDefault();
-						visited = visited.filter((x) => x !== slug);
-						localStorage.visitedWikis = JSON.stringify(visited);
-						vdiv.removeChild(wlink);
-					};
-					wlink.appendChild(del);
-					vdiv.appendChild(wlink);
-				}
-				form.appendChild(vdiv);
-			}
-			form.onsubmit = (e) => {
-				e.preventDefault();
-				if (input.value.length < 1) input.value = 'test';
-				const slug = encodeURIComponent(input.value);
-				if (!visited.find((x) => x === slug)) {
-					visited.push(slug);
-					localStorage.visitedWikis = JSON.stringify(visited);
-				}
-				location.href = `/w/${slug}/app.html`;
-			};
-			this.#parent.insertBefore(form, nextSibling);
-			this.domNodes.push(form);
+			const link = this.document.createElement('a');
+			link.className = 'tc-btn-primary';
+			link.href = new URL('app/app.html', location.href).href;
+			link.textContent = 'Open Local Demo Wiki';
+			link.style.display = 'inline-block';
+			link.style.marginTop = '0.75rem';
+			link.style.padding = '0.5rem 1rem';
+			link.style.borderRadius = '4px';
+			link.style.background = '#ffedda';
+			link.style.color = '#333';
+			link.style.border = '1px solid #49411f';
+			link.style.textDecoration = 'none';
+			this.#parent.insertBefore(link, nextSibling);
+			this.domNodes.push(link);
 		}
 
 		refresh(_chg) {

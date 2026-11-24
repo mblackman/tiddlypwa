@@ -13,17 +13,19 @@ TiddlyPWA provides three tiers for authoring Web Push notifications in your wiki
 Run a JavaScript ES module on the server on a cron schedule to poll RSS/Atom feeds, JSON APIs, or web pages while your devices are offline.
 
 ''Required Tiddler Fields:''
+
 * `type`: `application/javascript`
 * `module-type`: `pwa-watcher`
 * `watcher-id`: unique ID (e.g. `my.hn.rss`)
 * `schedule-cron`: 5-field cron (e.g. `0 * * * *`)
 * `allowed-hosts`: comma-separated hostnames (e.g. `news.ycombinator.com`)
-* `config-filter` (optional): filter of tiddlers passed in `context.items`
+* `config-filter` (or `target-filter`, optional): filter of tiddlers passed in `items`
+* `watched-fields` (optional): fields included in `item.fields` (default: `title`)
 * `enabled` (optional): `yes` (default) or `no`
 
 ''Module Signature & `host` API:''
 ```javascript
-export async function evaluate(context, host) {
+export async function evaluate(items, host) {
 	// host.fetch(url, opts?) -> { ok, status, notModified, body, headers }
 	// host.parseXml(xml) -> { items: [{ title, link, guid, pubDate, description }] }
 	// host.queryHtml(html, selector) -> [{ tag, text, html, attrs }]

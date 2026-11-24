@@ -2,15 +2,9 @@ title: ServerHosting
 tags: [[TiddlyPWA Docs]]
 
 <div class="tpwadoc-row">
-	<$link overrideClass="tpwadoc-card tpwadoc-card-glitch" to="ServerHosting/Glitch">
-		<div class="tpwadoc-icon">🐟</div>
-		<div class="tpwadoc-title">Host on Glitch</div>
-		<div class="tpwadoc-subtitle">Set up a server in a few clicks with a free account</div>
-	</$link>
 	<$link overrideClass="tpwadoc-card tpwadoc-card-diy" to="ServerHosting/DIY">
 		<div class="tpwadoc-icon">🖥️</div>
 		<div class="tpwadoc-title">Host on a computer</div>
 		<div class="tpwadoc-subtitle">Do It Yourself on any good old general purpose computer you administer</div>
 	</$link>
 </div>
-

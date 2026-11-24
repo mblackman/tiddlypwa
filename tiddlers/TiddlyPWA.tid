@@ -16,8 +16,8 @@ with ''encrypted'' local persistent storage and efficient ''synchronization'' wi
 !! Get started
 
 <div class="tpwadoc-card tpwadoc-card-try">
-	<div class="tpwadoc-title">Try It Out – Right Here, Right Now</div>
-	<div class="tpwadoc-subtitle">You can have multiple local on-device wikis when running from here. Pick a name and go!</div>
+	<div class="tpwadoc-title">Try It Out - Right Here, Right Now</div>
+	<div class="tpwadoc-subtitle">Launch a local on-device encrypted TiddlyPWA wiki stored directly in your browser.</div>
 	<$goto-form/>
 </div>
 
