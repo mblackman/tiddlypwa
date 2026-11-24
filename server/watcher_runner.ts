@@ -68,6 +68,7 @@ export type WatcherRunnerOptions = {
 	nowMs?: number;
 	subject?: string;
 	pushFetchFn?: typeof fetch;
+	signal?: AbortSignal;
 };
 
 export async function computeCodeHash(codeSource: string): Promise<string> {
@@ -273,11 +274,11 @@ const defaultResolveDns: DnsResolverFn = async (hostname, recordType) => {
 	}
 };
 
-export async function validateUrlAgainstSsrf(
+export async function resolveAndValidateUrl(
 	rawUrl: string,
 	allowedHosts: Set<string>,
 	resolveDnsFn: DnsResolverFn = defaultResolveDns,
-): Promise<URL> {
+): Promise<{ url: URL; resolvedIps: string[] }> {
 	let parsed: URL;
 	try {
 		parsed = new URL(rawUrl);
@@ -297,7 +298,7 @@ export async function validateUrlAgainstSsrf(
 		if (isBlockedIp(hostname)) {
 			throw new Error(`SSRF blocked IP address for host "${hostname}"`);
 		}
-		return parsed;
+		return { url: parsed, resolvedIps: [hostname.replace(/^\[|\]$/g, '')] };
 	}
 
 	const [aRecords, aaaaRecords] = await Promise.all([
@@ -313,7 +314,16 @@ export async function validateUrlAgainstSsrf(
 			throw new Error(`SSRF blocked resolved IP "${ip}" for host "${hostname}"`);
 		}
 	}
-	return parsed;
+	return { url: parsed, resolvedIps: allIps };
+}
+
+export async function validateUrlAgainstSsrf(
+	rawUrl: string,
+	allowedHosts: Set<string>,
+	resolveDnsFn: DnsResolverFn = defaultResolveDns,
+): Promise<URL> {
+	const { url } = await resolveAndValidateUrl(rawUrl, allowedHosts, resolveDnsFn);
+	return url;
 }
 
 export async function safeHostFetch(
@@ -326,6 +336,7 @@ export async function safeHostFetch(
 	const maxRedirects = options?.maxRedirects ?? 3;
 	const maxBytes = options?.maxResponseBytes ?? 2 * 1024 * 1024;
 	const fetchFn = options?.fetchFn ?? fetch;
+	const useDefaultFetch = options?.fetchFn === undefined;
 	const resolveDnsFn = options?.resolveDnsFn ?? defaultResolveDns;
 	const cacheKey = typeof fetchOpts?.cacheKey === 'string' && fetchOpts.cacheKey.trim()
 		? fetchOpts.cacheKey.trim()
@@ -333,7 +344,7 @@ export async function safeHostFetch(
 
 	let currentUrl = rawUrl;
 	for (let hop = 0; hop <= maxRedirects; hop++) {
-		const validatedUrl = await validateUrlAgainstSsrf(currentUrl, allowedHosts, resolveDnsFn);
+		const { url: validatedUrl, resolvedIps } = await resolveAndValidateUrl(currentUrl, allowedHosts, resolveDnsFn);
 		const reqHeaders = new Headers();
 		reqHeaders.set('User-Agent', 'TiddlyPWA-Watcher/1.0');
 		if (fetchOpts?.headers && typeof fetchOpts.headers === 'object') {
@@ -350,131 +361,176 @@ export async function safeHostFetch(
 			if (cached.lastModified) reqHeaders.set('If-Modified-Since', cached.lastModified);
 		}
 
-		const resp = await fetchFn(validatedUrl.toString(), {
-			method: 'GET',
-			headers: reqHeaders,
-			redirect: 'manual',
-		});
-
-		if ([301, 302, 303, 307, 308].includes(resp.status)) {
-			const location = resp.headers.get('location');
-			try {
-				await resp.body?.cancel();
-			} catch (_e) {
-				// ignore
-			}
-			if (!location) {
-				throw new Error(`Redirect response ${resp.status} missing Location header`);
-			}
-			if (hop === maxRedirects) {
-				throw new Error(`Exceeded maximum redirect hops (${maxRedirects})`);
-			}
-			currentUrl = new URL(location, validatedUrl).toString();
-			continue;
+		let targetUrl = validatedUrl.toString();
+		let pinnedClient: Deno.HttpClient | null = null;
+		const hostname = validatedUrl.hostname.toLowerCase();
+		const isIpLiteral = Boolean(parseIpv4(hostname) || hostname.startsWith('[') || hostname.includes(':'));
+		// Pin DNS resolution for http: requests on real fetch to close DNS-rebinding TOCTOU.
+		// (HTTPS needs matching TLS SNI so validated host continues directly unless custom fetchFn is injected.)
+		if (useDefaultFetch && validatedUrl.protocol === 'http:' && resolvedIps.length > 0 && !isIpLiteral) {
+			const pinnedIp = resolvedIps[0];
+			const pinnedUrl = new URL(targetUrl);
+			pinnedUrl.hostname = pinnedIp.includes(':') ? `[${pinnedIp}]` : pinnedIp;
+			reqHeaders.set('Host', validatedUrl.host);
+			pinnedClient = Deno.createHttpClient({ allowHost: true });
+			targetUrl = pinnedUrl.toString();
 		}
 
-		if (resp.status === 304) {
-			try {
-				await resp.body?.cancel();
-			} catch (_e) {
-				// ignore
-			}
-			return {
-				ok: false,
-				status: 304,
-				notModified: true,
-				body: '',
-				headers: Object.fromEntries(resp.headers.entries()),
-			};
-		}
+		let redirectLocation: string | null = null;
+		let redirectStatus = 0;
+		try {
+			const resp = await fetchFn(targetUrl, {
+				method: 'GET',
+				headers: reqHeaders,
+				redirect: 'manual',
+				signal: options?.signal,
+				...(pinnedClient ? { client: pinnedClient } : {}),
+			} as RequestInit);
 
-		let bodyBytes = new Uint8Array(0);
-		if (resp.body) {
-			const reader = resp.body.getReader();
-			const chunks: Uint8Array[] = [];
-			let total = 0;
-			try {
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) break;
-					if (value) {
-						total += value.byteLength;
-						if (total > maxBytes) {
-							await reader.cancel();
-							throw new Error(`Response body exceeds maximum size limit (${maxBytes} bytes)`);
-						}
-						chunks.push(value);
-					}
-				}
-			} finally {
+			if ([301, 302, 303, 307, 308].includes(resp.status)) {
+				redirectStatus = resp.status;
+				redirectLocation = resp.headers.get('location');
 				try {
-					reader.releaseLock();
+					await resp.body?.cancel();
 				} catch (_e) {
 					// ignore
 				}
-			}
-			bodyBytes = new Uint8Array(total);
-			let offset = 0;
-			for (const chunk of chunks) {
-				bodyBytes.set(chunk, offset);
-				offset += chunk.byteLength;
-			}
-		}
+			} else if (resp.status === 304) {
+				try {
+					await resp.body?.cancel();
+				} catch (_e) {
+					// ignore
+				}
+				return {
+					ok: false,
+					status: 304,
+					notModified: true,
+					body: '',
+					headers: Object.fromEntries(resp.headers.entries()),
+				};
+			} else {
+				let bodyBytes = new Uint8Array(0);
+				if (resp.body) {
+					const reader = resp.body.getReader();
+					const chunks: Uint8Array[] = [];
+					let total = 0;
+					try {
+						while (true) {
+							const { done, value } = await reader.read();
+							if (done) break;
+							if (value) {
+								total += value.byteLength;
+								if (total > maxBytes) {
+									await reader.cancel();
+									throw new Error(`Response body exceeds maximum size limit (${maxBytes} bytes)`);
+								}
+								chunks.push(value);
+							}
+						}
+					} finally {
+						try {
+							reader.releaseLock();
+						} catch (_e) {
+							// ignore
+						}
+					}
+					bodyBytes = new Uint8Array(total);
+					let offset = 0;
+					for (const chunk of chunks) {
+						bodyBytes.set(chunk, offset);
+						offset += chunk.byteLength;
+					}
+				}
 
-		const bodyText = utfdec.decode(bodyBytes);
-		if (cacheKey && resp.status >= 200 && resp.status < 300) {
-			const etag = resp.headers.get('etag') || undefined;
-			const lastModified = resp.headers.get('last-modified') || undefined;
-			if (etag || lastModified) {
-				if (!nextState.httpCache) nextState.httpCache = {};
-				nextState.httpCache[cacheKey] = {
-					...(etag ? { etag } : {}),
-					...(lastModified ? { lastModified } : {}),
+				const bodyText = utfdec.decode(bodyBytes);
+				if (cacheKey && resp.status >= 200 && resp.status < 300) {
+					const etag = resp.headers.get('etag') || undefined;
+					const lastModified = resp.headers.get('last-modified') || undefined;
+					if (etag || lastModified) {
+						if (!nextState.httpCache) nextState.httpCache = {};
+						nextState.httpCache[cacheKey] = {
+							...(etag ? { etag } : {}),
+							...(lastModified ? { lastModified } : {}),
+						};
+					}
+				}
+
+				return {
+					ok: resp.ok,
+					status: resp.status,
+					notModified: false,
+					body: bodyText,
+					headers: Object.fromEntries(resp.headers.entries()),
 				};
 			}
+		} finally {
+			pinnedClient?.close();
 		}
 
-		return {
-			ok: resp.ok,
-			status: resp.status,
-			notModified: false,
-			body: bodyText,
-			headers: Object.fromEntries(resp.headers.entries()),
-		};
+		if (!redirectLocation) {
+			throw new Error(`Redirect response ${redirectStatus} missing Location header`);
+		}
+		if (hop === maxRedirects) {
+			throw new Error(`Exceeded maximum redirect hops (${maxRedirects})`);
+		}
+		currentUrl = new URL(redirectLocation, validatedUrl).toString();
 	}
 
 	throw new Error('Failed to fetch URL');
 }
 
-export function extractJsonLd(html: string, schemaType?: string): Record<string, unknown>[] {
-	if (typeof html !== 'string' || !html) return [];
-	const scriptRegex = /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-	const collected: Record<string, unknown>[] = [];
+export type QueryHtmlElement = {
+	tag: string;
+	text: string;
+	html: string;
+	attrs: Record<string, string>;
+};
 
-	const collectNode = (node: unknown) => {
+export type ParsedXmlFeedItem = {
+	title: string;
+	link: string;
+	id: string;
+	guid: string;
+	pubDate: string;
+	summary: string;
+	description: string;
+	content: string;
+};
+
+export type ParsedXmlFeed = {
+	feedTitle: string;
+	items: ParsedXmlFeedItem[];
+};
+
+const WATCHER_PARSERS_JS = `
+function extractJsonLd(html, schemaType) {
+	if (typeof html !== 'string' || !html) return [];
+	const scriptRegex = /<script\\b[^>]*type\\s*=\\s*["']application\\/ld\\+json["'][^>]*>([\\s\\S]*?)<\\/script>/gi;
+	const collected = [];
+
+	const collectNode = (node) => {
 		if (!node || typeof node !== 'object') return;
 		if (Array.isArray(node)) {
 			for (const item of node) collectNode(item);
 			return;
 		}
-		const obj = node as Record<string, unknown>;
-		if (Array.isArray(obj['@graph'])) {
-			for (const item of obj['@graph']) collectNode(item);
+		if (Array.isArray(node['@graph'])) {
+			for (const item of node['@graph']) collectNode(item);
 		}
 		if (!schemaType) {
-			collected.push(obj);
+			collected.push(node);
 			return;
 		}
-		const rawType = obj['@type'];
+		const rawType = node['@type'];
 		const matches = rawType === schemaType ||
 			(Array.isArray(rawType) && rawType.includes(schemaType)) ||
-			(typeof rawType === 'string' && rawType.endsWith(`/${schemaType}`));
+			(typeof rawType === 'string' && rawType.endsWith('/' + schemaType));
 		if (matches) {
-			collected.push(obj);
+			collected.push(node);
 		}
 	};
 
-	let match: RegExpExecArray | null;
+	let match;
 	while ((match = scriptRegex.exec(html)) !== null) {
 		const rawJson = match[1].trim();
 		if (!rawJson) continue;
@@ -488,7 +544,7 @@ export function extractJsonLd(html: string, schemaType?: string): Record<string,
 	return collected;
 }
 
-export function decodeHtmlEntities(str: string): string {
+function decodeHtmlEntities(str) {
 	if (!str || !str.includes('&')) return str;
 	return str
 		.replace(/&nbsp;/gi, ' ')
@@ -502,40 +558,20 @@ export function decodeHtmlEntities(str: string): string {
 			const cp = parseInt(hex, 16);
 			return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
 		})
-		.replace(/&#(\d+);/g, (_, dec) => {
+		.replace(/&#(\\d+);/g, (_, dec) => {
 			const cp = parseInt(dec, 10);
 			return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
 		});
 }
 
-type HtmlNode = {
-	tag: string;
-	attrs: Record<string, string>;
-	children: Array<HtmlNode | string>;
-	parent: HtmlNode | null;
-};
-
 const VOID_HTML_TAGS = new Set([
-	'area',
-	'base',
-	'br',
-	'col',
-	'embed',
-	'hr',
-	'img',
-	'input',
-	'link',
-	'meta',
-	'param',
-	'source',
-	'track',
-	'wbr',
+	'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
 ]);
 
-function parseAttrs(attrString: string): Record<string, string> {
-	const attrs: Record<string, string> = {};
-	const attrRegex = /([a-zA-Z0-9_:@.-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
-	let m: RegExpExecArray | null;
+function parseAttrs(attrString) {
+	const attrs = {};
+	const attrRegex = /([a-zA-Z0-9_:@.-]+)(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\\x60]+)))?/g;
+	let m;
 	while ((m = attrRegex.exec(attrString)) !== null) {
 		const name = m[1].toLowerCase();
 		const val = m[2] ?? m[3] ?? m[4] ?? '';
@@ -544,26 +580,26 @@ function parseAttrs(attrString: string): Record<string, string> {
 	return attrs;
 }
 
-function serializeInnerHtml(node: HtmlNode): string {
+function serializeInnerHtml(node) {
 	let out = '';
 	for (const child of node.children) {
 		if (typeof child === 'string') {
 			out += child;
 		} else {
 			const attrStr = Object.entries(child.attrs)
-				.map(([k, v]) => ` ${k}="${v.replace(/"/g, '&quot;')}"`)
+				.map(([k, v]) => ' ' + k + '="' + v.replace(/"/g, '&quot;') + '"')
 				.join('');
 			if (VOID_HTML_TAGS.has(child.tag)) {
-				out += `<${child.tag}${attrStr}>`;
+				out += '<' + child.tag + attrStr + '>';
 			} else {
-				out += `<${child.tag}${attrStr}>${serializeInnerHtml(child)}</${child.tag}>`;
+				out += '<' + child.tag + attrStr + '>' + serializeInnerHtml(child) + '</' + child.tag + '>';
 			}
 		}
 	}
 	return out;
 }
 
-function extractTextContent(node: HtmlNode): string {
+function extractTextContent(node) {
 	let out = '';
 	for (const child of node.children) {
 		if (typeof child === 'string') {
@@ -575,16 +611,16 @@ function extractTextContent(node: HtmlNode): string {
 	return out;
 }
 
-function parseSimpleHtmlTree(html: string): HtmlNode {
+function parseSimpleHtmlTree(html) {
 	const cleaned = html
-		.replace(/<!--[\s\S]*?-->/g, '')
+		.replace(/<!--[\\s\\S]*?-->/g, '')
 		.replace(/<!DOCTYPE[^>]*>/gi, '');
 
-	const root: HtmlNode = { tag: '#root', attrs: {}, children: [], parent: null };
-	let current: HtmlNode = root;
+	const root = { tag: '#root', attrs: {}, children: [], parent: null };
+	let current = root;
 
-	const tokenRegex = /<\/?([a-zA-Z][a-zA-Z0-9:-]*)\b([^>]*?)(\/?)>|([^<]+|<)/g;
-	let m: RegExpExecArray | null;
+	const tokenRegex = /<\\/?([a-zA-Z][a-zA-Z0-9:-]*)\\b([^>]*?)(\\/?)>|([^<]+|<)/g;
+	let m;
 	while ((m = tokenRegex.exec(cleaned)) !== null) {
 		const fullMatch = m[0];
 		if (m[4] !== undefined) {
@@ -597,7 +633,7 @@ function parseSimpleHtmlTree(html: string): HtmlNode {
 		const selfClosing = m[3] === '/' || VOID_HTML_TAGS.has(tag);
 
 		if (isClosing) {
-			let ptr: HtmlNode | null = current;
+			let ptr = current;
 			while (ptr && ptr !== root) {
 				if (ptr.tag === tag) {
 					current = ptr.parent || root;
@@ -606,7 +642,7 @@ function parseSimpleHtmlTree(html: string): HtmlNode {
 				ptr = ptr.parent;
 			}
 		} else {
-			const node: HtmlNode = {
+			const node = {
 				tag,
 				attrs: parseAttrs(attrPart),
 				children: [],
@@ -615,7 +651,7 @@ function parseSimpleHtmlTree(html: string): HtmlNode {
 			current.children.push(node);
 			if (!selfClosing) {
 				if (tag === 'script' || tag === 'style') {
-					const closeRegex = new RegExp(`([\\s\\S]*?)<\\/${tag}\\s*>`, 'i');
+					const closeRegex = new RegExp('([\\\\s\\\\S]*?)<\\\\/' + tag + '\\\\s*>', 'i');
 					closeRegex.lastIndex = tokenRegex.lastIndex;
 					const sub = cleaned.slice(tokenRegex.lastIndex);
 					const closeMatch = closeRegex.exec(sub);
@@ -632,23 +668,11 @@ function parseSimpleHtmlTree(html: string): HtmlNode {
 	return root;
 }
 
-type CompoundSelector = {
-	tag: string | null;
-	id: string | null;
-	classes: string[];
-	attrs: Array<{ name: string; op: string | null; val: string | null }>;
-};
-
-type SelectorStep = {
-	combinator: 'descendant' | 'child';
-	compound: CompoundSelector;
-};
-
-function parseCompoundSelector(raw: string): CompoundSelector {
+function parseCompoundSelector(raw) {
 	let rem = raw.trim();
-	const attrs: Array<{ name: string; op: string | null; val: string | null }> = [];
+	const attrs = [];
 	rem = rem.replace(
-		/\[\s*([a-zA-Z0-9_:@.-]+)\s*(?:([~|^$*]?=)\s*(?:"([^"]*)"|'([^']*)'|([^\]]*?)))?\s*\]/g,
+		/\\[\\s*([a-zA-Z0-9_:@.-]+)\\s*(?:([~|^$*]?=)\\s*(?:"([^"]*)"|'([^']*)'|([^\\]]*?)))?\\s*\\]/g,
 		(_, name, op, v1, v2, v3) => {
 			attrs.push({
 				name: name.toLowerCase(),
@@ -659,14 +683,14 @@ function parseCompoundSelector(raw: string): CompoundSelector {
 		},
 	);
 
-	let id: string | null = null;
+	let id = null;
 	rem = rem.replace(/#([a-zA-Z0-9_-]+)/g, (_, idVal) => {
 		id = idVal;
 		return '';
 	});
 
-	const classes: string[] = [];
-	rem = rem.replace(/\.([a-zA-Z0-9_-]+)/g, (_, clsVal) => {
+	const classes = [];
+	rem = rem.replace(/\\.([a-zA-Z0-9_-]+)/g, (_, clsVal) => {
 		classes.push(clsVal);
 		return '';
 	});
@@ -675,12 +699,12 @@ function parseCompoundSelector(raw: string): CompoundSelector {
 	return { tag, id, classes, attrs };
 }
 
-function parseSelectorChain(selectorStr: string): SelectorStep[] {
-	const normalized = selectorStr.trim().replace(/\s*>\s*/g, ' > ').replace(/\s+/g, ' ');
+function parseSelectorChain(selectorStr) {
+	const normalized = selectorStr.trim().replace(/\\s*>\\s*/g, ' > ').replace(/\\s+/g, ' ');
 	if (!normalized) return [];
 	const parts = normalized.split(' ');
-	const steps: SelectorStep[] = [];
-	let nextCombinator: 'descendant' | 'child' = 'descendant';
+	const steps = [];
+	let nextCombinator = 'descendant';
 	for (const p of parts) {
 		if (p === '>') {
 			nextCombinator = 'child';
@@ -695,12 +719,12 @@ function parseSelectorChain(selectorStr: string): SelectorStep[] {
 	return steps;
 }
 
-function matchesCompound(node: HtmlNode, comp: CompoundSelector): boolean {
+function matchesCompound(node, comp) {
 	if (node.tag === '#root') return false;
 	if (comp.tag && node.tag !== comp.tag) return false;
 	if (comp.id && node.attrs.id !== comp.id) return false;
 	if (comp.classes.length > 0) {
-		const nodeClasses = new Set((node.attrs.class || '').split(/\s+/).filter(Boolean));
+		const nodeClasses = new Set((node.attrs.class || '').split(/\\s+/).filter(Boolean));
 		for (const c of comp.classes) {
 			if (!nodeClasses.has(c)) return false;
 		}
@@ -714,27 +738,27 @@ function matchesCompound(node: HtmlNode, comp: CompoundSelector): boolean {
 		if (attr.op === '^=' && !actual.startsWith(expected)) return false;
 		if (attr.op === '$=' && !actual.endsWith(expected)) return false;
 		if (attr.op === '*=' && !actual.includes(expected)) return false;
-		if (attr.op === '~=' && !actual.split(/\s+/).includes(expected)) return false;
+		if (attr.op === '~=' && !actual.split(/\\s+/).includes(expected)) return false;
 		if (attr.op === '|=' && actual !== expected && !actual.startsWith(expected + '-')) return false;
 	}
 	return true;
 }
 
-function matchesChain(node: HtmlNode, chain: SelectorStep[]): boolean {
+function matchesChain(node, chain) {
 	if (chain.length === 0) return false;
 	if (!matchesCompound(node, chain[chain.length - 1].compound)) return false;
 
-	let currNode: HtmlNode | null = node;
+	let currNode = node;
 	for (let i = chain.length - 1; i >= 1; i--) {
 		const combinator = chain[i].combinator;
 		const targetComp = chain[i - 1].compound;
 		if (combinator === 'child') {
-			const parent: HtmlNode | null = currNode?.parent || null;
+			const parent = currNode?.parent || null;
 			if (!parent || !matchesCompound(parent, targetComp)) return false;
 			currNode = parent;
 		} else {
-			let ancestor: HtmlNode | null = currNode?.parent || null;
-			let found: HtmlNode | null = null;
+			let ancestor = currNode?.parent || null;
+			let found = null;
 			while (ancestor && ancestor.tag !== '#root') {
 				if (matchesCompound(ancestor, targetComp)) {
 					found = ancestor;
@@ -749,14 +773,7 @@ function matchesChain(node: HtmlNode, chain: SelectorStep[]): boolean {
 	return true;
 }
 
-export type QueryHtmlElement = {
-	tag: string;
-	text: string;
-	html: string;
-	attrs: Record<string, string>;
-};
-
-export function queryHtml(html: string, selector: string): QueryHtmlElement[] {
+function queryHtml(html, selector) {
 	if (typeof html !== 'string' || !html || typeof selector !== 'string' || !selector.trim()) {
 		return [];
 	}
@@ -767,8 +784,8 @@ export function queryHtml(html: string, selector: string): QueryHtmlElement[] {
 		.filter((c) => c.length > 0);
 	if (chains.length === 0) return [];
 
-	const results: QueryHtmlElement[] = [];
-	const walk = (node: HtmlNode) => {
+	const results = [];
+	const walk = (node) => {
 		if (node.tag !== '#root') {
 			if (chains.some((chain) => matchesChain(node, chain))) {
 				results.push({
@@ -789,63 +806,49 @@ export function queryHtml(html: string, selector: string): QueryHtmlElement[] {
 	return results;
 }
 
-export type ParsedXmlFeedItem = {
-	title: string;
-	link: string;
-	id: string;
-	pubDate: string;
-	summary: string;
-	content: string;
-};
-
-export type ParsedXmlFeed = {
-	feedTitle: string;
-	items: ParsedXmlFeedItem[];
-};
-
-function stripCdataAndTags(raw: string): string {
+function stripCdataAndTags(raw) {
 	if (!raw) return '';
-	const withoutCdata = raw.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+	const withoutCdata = raw.replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1');
 	return decodeHtmlEntities(withoutCdata.replace(/<[^>]+>/g, '')).trim();
 }
 
-function unwrapCdata(raw: string): string {
+function unwrapCdata(raw) {
 	if (!raw) return '';
-	const withoutCdata = raw.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+	const withoutCdata = raw.replace(/<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>/g, '$1');
 	return decodeHtmlEntities(withoutCdata).trim();
 }
 
-function extractXmlTagContent(block: string, tagNames: string[]): string {
+function extractXmlTagContent(block, tagNames) {
 	for (const tag of tagNames) {
-		const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-		const re = new RegExp(`<${escaped}\\b[^>]*>([\\s\\S]*?)<\\/${escaped}>`, 'i');
+		const escaped = tag.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&');
+		const re = new RegExp('<' + escaped + '\\\\b[^>]*>([\\\\s\\\\S]*?)<\\\\/' + escaped + '>', 'i');
 		const m = re.exec(block);
 		if (m) return m[1];
 	}
 	return '';
 }
 
-export function parseXml(xml: string): ParsedXmlFeed {
+function parseXml(xml) {
 	if (typeof xml !== 'string' || !xml.trim()) {
 		return { feedTitle: '', items: [] };
 	}
 
-	const items: ParsedXmlFeedItem[] = [];
-	const isAtom = /<feed\b/i.test(xml) && /<entry\b/i.test(xml);
+	const items = [];
+	const isAtom = /<feed\\b/i.test(xml) && /<entry\\b/i.test(xml);
 
 	if (isAtom) {
-		const firstEntryIdx = xml.search(/<entry\b/i);
+		const firstEntryIdx = xml.search(/<entry\\b/i);
 		const headerPart = firstEntryIdx !== -1 ? xml.slice(0, firstEntryIdx) : xml;
 		const feedTitle = stripCdataAndTags(extractXmlTagContent(headerPart, ['title']));
 
-		const entryRegex = /<entry\b[^>]*>([\s\S]*?)<\/entry>/gi;
-		let m: RegExpExecArray | null;
+		const entryRegex = /<entry\\b[^>]*>([\\s\\S]*?)<\\/entry>/gi;
+		let m;
 		while ((m = entryRegex.exec(xml)) !== null) {
 			const block = m[1];
 			const title = stripCdataAndTags(extractXmlTagContent(block, ['title']));
 			let link = '';
-			const altLinkMatch = /<link\b[^>]*rel=["']alternate["'][^>]*href=["']([^"']+)["'][^>]*\/?>/i.exec(block) ||
-				/<link\b[^>]*href=["']([^"']+)["'][^>]*\/?>/i.exec(block);
+			const altLinkMatch = /<link\\b[^>]*rel=["']alternate["'][^>]*href=["']([^"']+)["'][^>]*\\/?>/i.exec(block) ||
+				/<link\\b[^>]*href=["']([^"']+)["'][^>]*\\/?>/i.exec(block);
 			if (altLinkMatch) {
 				link = decodeHtmlEntities(altLinkMatch[1]);
 			} else {
@@ -855,18 +858,18 @@ export function parseXml(xml: string): ParsedXmlFeed {
 			const pubDate = stripCdataAndTags(extractXmlTagContent(block, ['published', 'updated', 'dc:date']));
 			const summary = unwrapCdata(extractXmlTagContent(block, ['summary']));
 			const content = unwrapCdata(extractXmlTagContent(block, ['content'])) || summary;
-			items.push({ title, link, id, pubDate, summary, content });
+			items.push({ title, link, id, guid: id, pubDate, summary, description: summary, content });
 		}
 		return { feedTitle, items };
 	}
 
 	// RSS 2.0 / RSS 1.0
-	const firstItemIdx = xml.search(/<item\b/i);
+	const firstItemIdx = xml.search(/<item\\b/i);
 	const headerPart = firstItemIdx !== -1 ? xml.slice(0, firstItemIdx) : xml;
 	const feedTitle = stripCdataAndTags(extractXmlTagContent(headerPart, ['title']));
 
-	const itemRegex = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
-	let m: RegExpExecArray | null;
+	const itemRegex = /<item\\b[^>]*>([\\s\\S]*?)<\\/item>/gi;
+	let m;
 	while ((m = itemRegex.exec(xml)) !== null) {
 		const block = m[1];
 		const title = stripCdataAndTags(extractXmlTagContent(block, ['title']));
@@ -875,10 +878,22 @@ export function parseXml(xml: string): ParsedXmlFeed {
 		const pubDate = stripCdataAndTags(extractXmlTagContent(block, ['pubDate', 'dc:date', 'published']));
 		const summary = unwrapCdata(extractXmlTagContent(block, ['description', 'summary']));
 		const content = unwrapCdata(extractXmlTagContent(block, ['content:encoded', 'content'])) || summary;
-		items.push({ title, link, id, pubDate, summary, content });
+		items.push({ title, link, id, guid: id, pubDate, summary, description: summary, content });
 	}
 	return { feedTitle, items };
 }
+`;
+
+const hostParsers = new Function(
+	`${WATCHER_PARSERS_JS}\nreturn { extractJsonLd, decodeHtmlEntities, queryHtml, parseXml };`,
+)() as {
+	extractJsonLd: (html: string, schemaType?: string) => Record<string, unknown>[];
+	decodeHtmlEntities: (str: string) => string;
+	queryHtml: (html: string, selector: string) => QueryHtmlElement[];
+	parseXml: (xml: string) => ParsedXmlFeed;
+};
+
+export const { extractJsonLd, decodeHtmlEntities, queryHtml, parseXml } = hostParsers;
 
 // Serial execution queue so at most 1 watcher Worker runs at a time
 let watcherQueueTail: Promise<unknown> = Promise.resolve();
@@ -912,6 +927,7 @@ export function runSandboxedWatcher(
 			const moduleDataUrl = `data:application/javascript;base64,${codeBase64}`;
 
 			const bootstrapSource = `
+${WATCHER_PARSERS_JS}
 const pendingRpcs = new Map();
 let nextRpcId = 1;
 
@@ -928,13 +944,13 @@ const host = {
 		return callHost('fetch', [url, opts]);
 	},
 	extractJsonLd(html, schemaType) {
-		return callHost('extractJsonLd', [html, schemaType]);
+		return Promise.resolve(extractJsonLd(html, schemaType));
 	},
 	queryHtml(html, selector) {
-		return callHost('queryHtml', [html, selector]);
+		return Promise.resolve(queryHtml(html, selector));
 	},
 	parseXml(xml) {
-		return callHost('parseXml', [xml]);
+		return Promise.resolve(parseXml(xml));
 	},
 	getState(key) {
 		return callHost('getState', [key]);
@@ -996,9 +1012,16 @@ self.onmessage = async (evt) => {
 				},
 			});
 
+			const abortController = new AbortController();
+			const fetchOptions: WatcherRunnerOptions = {
+				...options,
+				signal: options?.signal ? AbortSignal.any([options.signal, abortController.signal]) : abortController.signal,
+			};
+
 			const watchdog = setTimeout(() => {
 				if (settled) return;
 				settled = true;
+				abortController.abort();
 				try {
 					worker.terminate();
 				} catch (_e) {
@@ -1011,6 +1034,7 @@ self.onmessage = async (evt) => {
 				if (settled) return;
 				settled = true;
 				clearTimeout(watchdog);
+				abortController.abort();
 				try {
 					worker.terminate();
 				} catch (_e) {
@@ -1048,17 +1072,8 @@ self.onmessage = async (evt) => {
 								args[1] as { cacheKey?: string; headers?: Record<string, string> } | undefined,
 								allowedHosts,
 								nextState,
-								options,
+								fetchOptions,
 							);
-						} else if (op === 'extractJsonLd') {
-							result = extractJsonLd(
-								String(args[0] ?? ''),
-								args[1] !== undefined ? String(args[1]) : undefined,
-							);
-						} else if (op === 'queryHtml') {
-							result = queryHtml(String(args[0] ?? ''), String(args[1] ?? ''));
-						} else if (op === 'parseXml') {
-							result = parseXml(String(args[0] ?? ''));
 						} else if (op === 'getState') {
 							const k = String(args[0] ?? '');
 							result = nextState.custom?.[k];

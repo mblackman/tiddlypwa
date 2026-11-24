@@ -21,7 +21,7 @@ export type Tiddler = {
 	sbct?: Uint8Array;
 	mtime: Date;
 	deleted: boolean;
-	baseMtime?: Date;
+	baseMtime?: Date | null;
 };
 
 export type PushSubscriptionRow = {
@@ -88,6 +88,8 @@ export interface Datastore {
 	maxMtime(token: string): number;
 	tiddlersChangedSince(token: string, since: Date): Generator<Tiddler>;
 	upsertTiddler(token: string, tiddler: Tiddler, writeMtimeMs?: number): { success: boolean; conflict?: boolean };
+	getTombstoneHorizon(): number;
+	pruneTombstones(cutoffMs: number): number;
 	upsertPushSubscription(sub: PushSubscriptionRow): void;
 	deletePushSubscription(token: string, endpoint: string): void;
 	deleteAllPushSubscriptions(token: string): void;

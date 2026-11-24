@@ -1,4 +1,4 @@
-import { assertEquals } from 'https://deno.land/std@0.192.0/testing/asserts.ts';
+import { assertEquals } from '@std/assert';
 import { SQLiteDatastore } from './sqlite.ts';
 
 Deno.test('SQLiteDatastore: upsertTiddler respects batchWriteTimeMs', () => {
@@ -53,4 +53,33 @@ Deno.test('SQLiteDatastore: upsertTiddler with stale baseMtime is rejected', () 
 	// DB should still hold the initial write time
 	const tid = db.getTiddler('token2', thash);
 	assertEquals(tid!.mtime.getTime(), initialWriteTime);
+});
+
+Deno.test('P1-5: file-backed SQLiteDatastore uses native WAL mode, foreign_keys, and nested SAVEPOINT rollback', () => {
+	const dir = Deno.makeTempDirSync();
+	const dbPath = `${dir}/test.db`;
+	const db = new SQLiteDatastore(dbPath);
+	try {
+		const mode = String(db.query('PRAGMA journal_mode')[0][0]).toLowerCase();
+		assertEquals(mode, 'wal');
+		const fk = db.query('PRAGMA foreign_keys')[0][0];
+		assertEquals(fk, 1);
+
+		db.transaction(() => {
+			db.createWiki('outer-wiki', 'keep');
+			try {
+				db.transaction(() => {
+					db.createWiki('inner-wiki', 'rollback');
+					throw new Error('inner boom');
+				});
+			} catch (_e) {
+				// inner rollback expected
+			}
+		});
+		assertEquals(Boolean(db.getWiki('outer-wiki')), true);
+		assertEquals(db.getWiki('inner-wiki'), undefined);
+	} finally {
+		db.close(true);
+		Deno.removeSync(dir, { recursive: true });
+	}
 });

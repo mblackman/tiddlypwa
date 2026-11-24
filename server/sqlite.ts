@@ -1,3 +1,4 @@
+import { DatabaseSync, StatementSync } from 'node:sqlite';
 import {
 	Datastore,
 	File,
@@ -8,7 +9,6 @@ import {
 	WatcherModuleRow,
 	Wiki,
 } from './data.d.ts';
-import { DB } from 'sqlite';
 
 const sql = String.raw; // For tools/editors
 
@@ -18,15 +18,175 @@ function parseTime(x: number) {
 	return time;
 }
 
-export class SQLiteDatastore extends DB implements Datastore {
-	// Unlike the constructor, this runs before other fields (prepared queries)
-	#_ = (() => {
-		this.execute('PRAGMA foreign_keys = ON;');
+type BindParams = Record<string, any>;
+
+function normalizeParams(params?: Record<string, unknown>): BindParams | undefined {
+	if (!params) return undefined;
+	const out: BindParams = {};
+	for (const [k, v] of Object.entries(params)) {
+		out[k] = v === undefined ? null : v;
+	}
+	return out;
+}
+
+export class SQLiteDatastore implements Datastore {
+	#db: DatabaseSync;
+	#changes = 0;
+	#txnDepth = 0;
+	#savepointSeq = 0;
+	#closed = false;
+
+	#getConfigStmt: StatementSync;
+	#wikiStmt: StatementSync;
+	#wikiPrefixStmt: StatementSync;
+	#wikiFileStmt: StatementSync;
+	#changedStmt: StatementSync;
+	#tiddlerStmt: StatementSync;
+	#maxMtimeStmt: StatementSync;
+	#insertStmt: StatementSync;
+	#updateWithBaseMtimeStmt: StatementSync;
+	#updateWithMtimeStmt: StatementSync;
+
+	constructor(path = ':memory:') {
+		this.#db = new DatabaseSync(path);
+		if (path !== ':memory:') {
+			this.#db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
+		}
+		this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
 		this.migrate();
-	})();
+
+		this.#getConfigStmt = this.#prep(sql`SELECT value FROM server_config WHERE key = :key`);
+		this.#wikiStmt = this.#prep(
+			sql`SELECT token, authcode, salt, note, watcher_pubkey FROM wikis WHERE token = :token`,
+		);
+		this.#wikiPrefixStmt = this.#prep(
+			sql`SELECT token, authcode, salt, note, watcher_pubkey FROM wikis WHERE substr(token, 1, length(:halftoken)) = :halftoken`,
+		);
+		this.#wikiFileStmt = this.#prep(sql`
+			SELECT files.etag AS etag, rawsize, ctype, body
+			FROM files, wikifiles
+			WHERE files.etag = wikifiles.etag AND wikifiles.name = :name AND substr(wikifiles.token, 1, length(:halftoken)) = :halftoken
+		`);
+		this.#changedStmt = this.#prep(sql`
+			SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
+			FROM tiddlers WHERE mtime > :modsince AND token = :token
+			ORDER BY mtime ASC
+		`);
+		this.#tiddlerStmt = this.#prep(sql`
+			SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
+			FROM tiddlers WHERE token = :token AND thash = :thash
+		`);
+		this.#maxMtimeStmt = this.#prep(sql`
+			SELECT max(mtime) AS mtime FROM tiddlers WHERE token = :token
+		`);
+		this.#insertStmt = this.#prep(sql`
+			INSERT INTO tiddlers (token, thash, iv, ct, sbiv, sbct, mtime, deleted)
+			VALUES (:token, :thash, :iv, :ct, :sbiv, :sbct, :mtime, :deleted)
+			ON CONFLICT (token, thash) DO NOTHING
+		`);
+		this.#updateWithBaseMtimeStmt = this.#prep(sql`
+			UPDATE tiddlers SET
+				iv = :iv,
+				ct = :ct,
+				sbiv = :sbiv,
+				sbct = :sbct,
+				mtime = :mtime,
+				deleted = :deleted
+			WHERE token = :token AND thash = :thash AND mtime <= :baseMtime
+		`);
+		this.#updateWithMtimeStmt = this.#prep(sql`
+			UPDATE tiddlers SET
+				iv = :iv,
+				ct = :ct,
+				sbiv = :sbiv,
+				sbct = :sbct,
+				mtime = :mtime,
+				deleted = :deleted
+			WHERE token = :token AND thash = :thash AND mtime < :clientMtime
+		`);
+	}
+
+	#prep(queryStr: string): StatementSync {
+		const stmt = this.#db.prepare(queryStr);
+		stmt.setAllowUnknownNamedParameters(true);
+		return stmt;
+	}
+
+	get changes(): number {
+		return this.#changes;
+	}
+
+	execute(queryStr: string): void {
+		this.#db.exec(queryStr);
+	}
+
+	query<T = unknown[]>(queryStr: string, params?: Record<string, unknown>): T[] {
+		const stmt = this.#prep(queryStr);
+		const bound = normalizeParams(params);
+		if (stmt.columns().length === 0) {
+			const info = bound ? stmt.run(bound) : stmt.run();
+			this.#changes = Number(info.changes);
+			return [];
+		}
+		(stmt as unknown as { setReturnArrays(enabled: boolean): void }).setReturnArrays(true);
+		return (bound ? stmt.all(bound) : stmt.all()) as T[];
+	}
+
+	queryEntries<T extends Record<string, unknown> = Record<string, unknown>>(
+		queryStr: string,
+		params?: Record<string, unknown>,
+	): T[] {
+		const stmt = this.#prep(queryStr);
+		const bound = normalizeParams(params);
+		const rows = (bound ? stmt.all(bound) : stmt.all()) as Record<string, unknown>[];
+		return rows.map((r) => ({ ...r }) as T);
+	}
+
+	transaction(f: () => void): void {
+		const depth = this.#txnDepth;
+		this.#txnDepth++;
+		if (depth === 0) {
+			this.#db.exec('BEGIN');
+			try {
+				f();
+				this.#db.exec('COMMIT');
+			} catch (err) {
+				try {
+					this.#db.exec('ROLLBACK');
+				} catch (_rbErr) {
+					// ignore rollback errors after failure
+				}
+				throw err;
+			} finally {
+				this.#txnDepth--;
+			}
+			return;
+		}
+		const spName = `sp_${++this.#savepointSeq}`;
+		this.#db.exec(`SAVEPOINT ${spName}`);
+		try {
+			f();
+			this.#db.exec(`RELEASE SAVEPOINT ${spName}`);
+		} catch (err) {
+			try {
+				this.#db.exec(`ROLLBACK TO SAVEPOINT ${spName}; RELEASE SAVEPOINT ${spName}`);
+			} catch (_rbErr) {
+				// ignore rollback errors after failure
+			}
+			throw err;
+		} finally {
+			this.#txnDepth--;
+		}
+	}
+
+	close(_force?: boolean): void {
+		if (this.#closed) return;
+		this.#closed = true;
+		this.#db.close();
+	}
 
 	migrate() {
-		const ver = this.query('PRAGMA user_version')[0][0] as number;
+		const ver = this.query<[number]>('PRAGMA user_version')[0][0];
 		if (ver < 1) {
 			this.execute(sql`
 				BEGIN;
@@ -104,7 +264,7 @@ export class SQLiteDatastore extends DB implements Datastore {
 			`);
 		}
 
-		const verAfterV2 = this.query('PRAGMA user_version')[0][0] as number;
+		const verAfterV2 = this.query<[number]>('PRAGMA user_version')[0][0];
 		if (verAfterV2 < 3) {
 			const wikiCols = this.query<[number, string]>(sql`PRAGMA table_info(wikis)`).map((r) => r[1]);
 			const addWatcherPubKeySql = wikiCols.includes('watcher_pubkey')
@@ -175,15 +335,22 @@ export class SQLiteDatastore extends DB implements Datastore {
 				COMMIT;
 			`);
 		}
+
+		const verAfterV3 = this.query<[number]>('PRAGMA user_version')[0][0];
+		if (verAfterV3 < 4) {
+			this.execute(sql`
+				BEGIN TRANSACTION;
+				INSERT INTO server_config (key, value) VALUES ('tombstone_horizon', '0')
+				ON CONFLICT (key) DO NOTHING;
+				PRAGMA user_version = 4;
+				COMMIT;
+			`);
+		}
 	}
 
-	#getConfigQuery = this.prepareQuery<[], { value: string }>(
-		sql`SELECT value FROM server_config WHERE key = :key`,
-	);
 	getServerConfig(key: string): string | undefined {
-		const rows = this.#getConfigQuery.allEntries({ key });
-		if (rows.length < 1) return undefined;
-		return rows[0].value;
+		const row = this.#getConfigStmt.get({ key }) as { value: string } | undefined;
+		return row ? row.value : undefined;
 	}
 
 	setServerConfig(key: string, value: string): void {
@@ -193,22 +360,14 @@ export class SQLiteDatastore extends DB implements Datastore {
 		);
 	}
 
-	#wikiQuery = this.prepareQuery<[], Wiki>(
-		sql`SELECT token, authcode, salt, note, watcher_pubkey FROM wikis WHERE token = :token`,
-	);
-	getWiki(token: string) {
-		const rows = this.#wikiQuery.allEntries({ token });
-		if (rows.length < 1) return;
-		return rows[0];
+	getWiki(token: string): Wiki | undefined {
+		const row = this.#wikiStmt.get({ token }) as Wiki | undefined;
+		return row ? { ...row } : undefined;
 	}
 
-	#wikiQueryPrefix = this.prepareQuery<[], Wiki>(
-		sql`SELECT token, authcode, salt, note, watcher_pubkey FROM wikis WHERE substr(token, 1, length(:halftoken)) = :halftoken`,
-	);
-	getWikiByPrefix(halftoken: string) {
-		const rows = this.#wikiQueryPrefix.allEntries({ halftoken });
-		if (rows.length < 1) return;
-		return rows[0];
+	getWikiByPrefix(halftoken: string): Wiki | undefined {
+		const row = this.#wikiPrefixStmt.get({ halftoken }) as Wiki | undefined;
+		return row ? { ...row } : undefined;
 	}
 
 	listWikis() {
@@ -253,8 +412,9 @@ export class SQLiteDatastore extends DB implements Datastore {
 		this.query(sql`DELETE FROM wikis WHERE token = :token`, { token });
 	}
 
-	fileExists(etag: Uint8Array) {
-		return this.query<[boolean]>(sql`SELECT count(*) FROM files WHERE etag = :etag`, { etag })[0][0];
+	fileExists(etag: Uint8Array): boolean {
+		const count = this.query<[number]>(sql`SELECT count(*) FROM files WHERE etag = :etag`, { etag })[0][0];
+		return Number(count) > 0;
 	}
 
 	storeFile(file: File) {
@@ -280,20 +440,13 @@ export class SQLiteDatastore extends DB implements Datastore {
 		this.query(sql`DELETE FROM wikifiles`);
 	}
 
-	#wikiFileQuery = this.prepareQuery<[], File>(sql`
-		SELECT files.etag AS etag, rawsize, ctype, body
-		FROM files, wikifiles
-		WHERE files.etag = wikifiles.etag AND wikifiles.name = :name AND substr(wikifiles.token, 1, length(:halftoken)) = :halftoken
-	`);
-	getWikiFile(halftoken: string, name: string) {
-		const rows = this.#wikiFileQuery.allEntries({ halftoken, name });
-		if (rows.length < 1) return;
-		return rows[0];
+	getWikiFile(halftoken: string, name: string): File | undefined {
+		const row = this.#wikiFileStmt.get({ halftoken, name }) as File | undefined;
+		return row ? { ...row } : undefined;
 	}
 
-	#changedQuery = this.prepareQuery<
-		[],
-		{
+	*tiddlersChangedSince(token: string, since: Date) {
+		const rows = this.#changedStmt.all({ modsince: since.getTime(), token }) as Array<{
 			thash: Uint8Array;
 			iv?: Uint8Array;
 			ct?: Uint8Array;
@@ -301,21 +454,14 @@ export class SQLiteDatastore extends DB implements Datastore {
 			sbct?: Uint8Array;
 			mtime: number;
 			deleted: number;
-		}
-	>(sql`
-		SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
-		FROM tiddlers WHERE mtime > :modsince AND token = :token
-		ORDER BY mtime ASC
-	`);
-	*tiddlersChangedSince(token: string, since: Date) {
-		for (const tiddler of this.#changedQuery.iterEntries({ modsince: since.getTime(), token })) {
+		}>;
+		for (const tiddler of rows) {
 			yield { ...tiddler, mtime: parseTime(tiddler.mtime), deleted: !!tiddler.deleted };
 		}
 	}
 
-	#tiddlerQuery = this.prepareQuery<
-		[],
-		{
+	getTiddler(token: string, thash: Uint8Array): Tiddler | undefined {
+		const row = this.#tiddlerStmt.get({ token, thash }) as {
 			thash: Uint8Array;
 			iv?: Uint8Array;
 			ct?: Uint8Array;
@@ -323,65 +469,26 @@ export class SQLiteDatastore extends DB implements Datastore {
 			sbct?: Uint8Array;
 			mtime: number;
 			deleted: number;
-		}
-	>(sql`
-		SELECT thash, iv, ct, sbiv, sbct, mtime, deleted
-		FROM tiddlers WHERE token = :token AND thash = :thash
-	`);
-	getTiddler(token: string, thash: Uint8Array): Tiddler | undefined {
-		const rows = this.#tiddlerQuery.allEntries({ token, thash });
-		if (rows.length < 1) return;
-		return { ...rows[0], mtime: parseTime(rows[0].mtime), deleted: Boolean(rows[0].deleted) };
+		} | undefined;
+		if (!row) return undefined;
+		return { ...row, mtime: parseTime(row.mtime), deleted: Boolean(row.deleted) };
 	}
 
-	#maxMtimeQuery = this.prepareQuery<[], { mtime: number | null }>(sql`
-		SELECT MAX(mtime) as mtime FROM tiddlers WHERE token = :token
-	`);
 	maxMtime(token: string): number {
-		const rows = this.#maxMtimeQuery.allEntries({ token });
-		return rows.length > 0 && rows[0].mtime !== null ? rows[0].mtime : 0;
+		const row = this.#maxMtimeStmt.get({ token }) as { mtime: number | null } | undefined;
+		return row && row.mtime !== null ? row.mtime : 0;
 	}
+
 	getNextMtime(token: string): number {
 		const maxMtime = this.maxMtime(token);
 		return Math.max(Date.now(), maxMtime + 1);
 	}
 
-	#insertQuery = this.prepareQuery(sql`
-		INSERT INTO tiddlers (token, thash, iv, ct, sbiv, sbct, mtime, deleted)
-		VALUES (:token, :thash, :iv, :ct, :sbiv, :sbct, :mtime, :deleted)
-		ON CONFLICT (token, thash) DO NOTHING
-	`);
-
-	// Atomic conditional update: only succeeds if concurrency check passes.
-	// When baseMtime is provided, update only if the existing mtime <= baseMtime.
-	#updateWithBaseMtimeQuery = this.prepareQuery(sql`
-		UPDATE tiddlers SET
-			iv = :iv,
-			ct = :ct,
-			sbiv = :sbiv,
-			sbct = :sbct,
-			mtime = :mtime,
-			deleted = :deleted
-		WHERE token = :token AND thash = :thash AND mtime <= :baseMtime
-	`);
-
-	// Fallback for clients that don't send baseMtime: update only if existing mtime < new mtime.
-	#updateWithMtimeQuery = this.prepareQuery(sql`
-		UPDATE tiddlers SET
-			iv = :iv,
-			ct = :ct,
-			sbiv = :sbiv,
-			sbct = :sbct,
-			mtime = :mtime,
-			deleted = :deleted
-		WHERE token = :token AND thash = :thash AND mtime < :clientMtime
-	`);
-
 	upsertTiddler(token: string, tiddler: Tiddler, writeMtimeMs?: number): { success: boolean; conflict?: boolean } {
 		const clientMtimeMs = tiddler.mtime.getTime();
 		const finalMtimeMs = writeMtimeMs !== undefined ? writeMtimeMs : clientMtimeMs;
 
-		const params = {
+		const params = normalizeParams({
 			token,
 			thash: tiddler.thash,
 			iv: tiddler.iv,
@@ -390,32 +497,58 @@ export class SQLiteDatastore extends DB implements Datastore {
 			sbct: tiddler.sbct,
 			mtime: finalMtimeMs,
 			deleted: tiddler.deleted ? 1 : 0,
-		};
+		})!;
 
 		// Try insert first (handles the common case of new tiddlers).
-		this.#insertQuery.execute(params);
-		if (this.changes > 0) {
+		this.#changes = Number(this.#insertStmt.run(params).changes);
+		if (this.#changes > 0) {
 			return { success: true };
 		}
 
-		// Row exists — attempt atomic conditional update.
+		// Row exists - attempt atomic conditional update.
+		if (tiddler.baseMtime === null) {
+			// Concurrent offline creation collision: row already exists on server.
+			return { success: false, conflict: true };
+		}
 		if (tiddler.baseMtime !== undefined) {
-			this.#updateWithBaseMtimeQuery.execute({
-				...params,
-				baseMtime: tiddler.baseMtime.getTime(),
-			});
+			this.#changes = Number(
+				this.#updateWithBaseMtimeStmt.run({
+					...params,
+					baseMtime: tiddler.baseMtime.getTime(),
+				}).changes,
+			);
 		} else {
 			// Backward compatibility: update only if our mtime is strictly newer.
-			this.#updateWithMtimeQuery.execute({
-				...params,
-				clientMtime: clientMtimeMs,
-			});
+			this.#changes = Number(
+				this.#updateWithMtimeStmt.run({
+					...params,
+					clientMtime: clientMtimeMs,
+				}).changes,
+			);
 		}
 
-		if (this.changes > 0) {
+		if (this.#changes > 0) {
 			return { success: true };
 		}
 		return { success: false, conflict: true };
+	}
+
+	getTombstoneHorizon(): number {
+		const raw = this.getServerConfig('tombstone_horizon');
+		const n = raw ? Number(raw) : 0;
+		return Number.isFinite(n) ? n : 0;
+	}
+
+	pruneTombstones(cutoffMs: number): number {
+		if (!Number.isFinite(cutoffMs) || cutoffMs <= 0) return 0;
+		let pruned = 0;
+		this.transaction(() => {
+			this.query(sql`DELETE FROM tiddlers WHERE deleted = 1 AND mtime < :cutoffMs`, { cutoffMs });
+			pruned = this.#changes;
+			const nextHorizon = Math.max(this.getTombstoneHorizon(), cutoffMs);
+			this.setServerConfig('tombstone_horizon', String(nextHorizon));
+		});
+		return pruned;
 	}
 
 	upsertPushSubscription(sub: PushSubscriptionRow): void {

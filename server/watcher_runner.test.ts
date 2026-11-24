@@ -86,7 +86,7 @@ Deno.test('SSRF IP validator blocks loopback, RFC1918, metadata, CGNAT, and IPv6
 	// Host allowlist & DNS resolution checks
 	const allowed = parseAllowedHosts('www.kobo.com, feeds.example.com');
 	await assertRejects(
-		() => validateUrlAgainstSsrf('https://evil.example.com/page', allowed, async () => ['93.184.216.34']),
+		() => validateUrlAgainstSsrf('https://evil.example.com/page', allowed, () => Promise.resolve(['93.184.216.34'])),
 		Error,
 		'not in allowed-hosts',
 	);
@@ -95,13 +95,13 @@ Deno.test('SSRF IP validator blocks loopback, RFC1918, metadata, CGNAT, and IPv6
 			validateUrlAgainstSsrf(
 				'https://www.kobo.com/page',
 				allowed,
-				async (_, type) => type === 'A' ? ['169.254.169.254'] : [],
+				(_, type) => Promise.resolve(type === 'A' ? ['169.254.169.254'] : []),
 			),
 		Error,
 		'SSRF blocked resolved IP',
 	);
 	await assertRejects(
-		() => validateUrlAgainstSsrf('file:///etc/passwd', allowed, async () => ['93.184.216.34']),
+		() => validateUrlAgainstSsrf('file:///etc/passwd', allowed, () => Promise.resolve(['93.184.216.34'])),
 		Error,
 		'Disallowed protocol',
 	);
@@ -109,7 +109,7 @@ Deno.test('SSRF IP validator blocks loopback, RFC1918, metadata, CGNAT, and IPv6
 	const validUrl = await validateUrlAgainstSsrf(
 		'https://www.kobo.com/us/en/ebook/test',
 		allowed,
-		async (_, type) => (type === 'A' ? ['93.184.216.34'] : []),
+		(_, type) => Promise.resolve(type === 'A' ? ['93.184.216.34'] : []),
 	);
 	assertEquals(validUrl.hostname, 'www.kobo.com');
 });
@@ -269,18 +269,20 @@ Deno.test('Sandboxed Deno Worker enforces zero permissions, watchdog timeout, an
 	`;
 
 	let fetchCalls = 0;
-	const mockFetch: typeof fetch = async (_input, init) => {
+	const mockFetch: typeof fetch = (_input, init) => {
 		fetchCalls++;
 		const hdrs = new Headers(init?.headers);
 		if (hdrs.get('if-none-match') === '"etag-v15"') {
-			return new Response(null, { status: 304 });
+			return Promise.resolve(new Response(null, { status: 304 }));
 		}
-		return new Response(
-			`<script type="application/ld+json">{"@type":"Book","name":"Manga Series Vol. 15"}</script>`,
-			{
-				status: 200,
-				headers: { etag: '"etag-v15"' },
-			},
+		return Promise.resolve(
+			new Response(
+				`<script type="application/ld+json">{"@type":"Book","name":"Manga Series Vol. 15"}</script>`,
+				{
+					status: 200,
+					headers: { etag: '"etag-v15"' },
+				},
+			),
 		);
 	};
 
@@ -291,7 +293,7 @@ Deno.test('Sandboxed Deno Worker enforces zero permissions, watchdog timeout, an
 		{},
 		{
 			fetchFn: mockFetch,
-			resolveDnsFn: async (_, type) => (type === 'A' ? ['93.184.216.34'] : []),
+			resolveDnsFn: (_, type) => Promise.resolve(type === 'A' ? ['93.184.216.34'] : []),
 		},
 	);
 	assertEquals(firstRun.results.length, 1);
@@ -307,7 +309,7 @@ Deno.test('Sandboxed Deno Worker enforces zero permissions, watchdog timeout, an
 		firstRun.nextState,
 		{
 			fetchFn: mockFetch,
-			resolveDnsFn: async (_, type) => (type === 'A' ? ['93.184.216.34'] : []),
+			resolveDnsFn: (_, type) => Promise.resolve(type === 'A' ? ['93.184.216.34'] : []),
 		},
 	);
 	assertEquals(fetchCalls, 2);
@@ -325,15 +327,17 @@ Deno.test('End-to-end sync_watchers, Ed25519 TOFU & tamper defense, run_watcher,
 	await getOrCreateVapidKeys(db);
 
 	let pushDeliveries = 0;
-	app.pushFetchFn = async () => {
+	app.pushFetchFn = () => {
 		pushDeliveries++;
-		return new Response(null, { status: 201 });
+		return Promise.resolve(new Response(null, { status: 201 }));
 	};
-	app.resolveDnsFn = async (_, type) => (type === 'A' ? ['93.184.216.34'] : []);
-	app.watcherFetchFn = async () =>
-		new Response(
-			`<script type="application/ld+json">{"@type":"Book","name":"Test Manga Vol. 5","position":5,"url":"https://www.kobo.com/book/5"}</script>`,
-			{ status: 200, headers: { etag: '"v5-etag"' } },
+	app.resolveDnsFn = (_, type) => Promise.resolve(type === 'A' ? ['93.184.216.34'] : []);
+	app.watcherFetchFn = () =>
+		Promise.resolve(
+			new Response(
+				`<script type="application/ld+json">{"@type":"Book","name":"Test Manga Vol. 5","position":5,"url":"https://www.kobo.com/book/5"}</script>`,
+				{ status: 200, headers: { etag: '"v5-etag"' } },
+			),
 		);
 
 	// Register a push subscription so watcher notifications have a recipient
@@ -616,4 +620,53 @@ Deno.test('End-to-end sync_watchers, Ed25519 TOFU & tamper defense, run_watcher,
 	assertEquals(listJson.watchers[0].lastError, null);
 
 	db.close(true);
+});
+
+Deno.test('P1-7 & P2-5: parseXml exposes guid/description aliases, safeHostFetch sends AbortSignal, and Worker runs parsers in sandbox', async () => {
+	const rss = `
+		<rss version="2.0">
+			<channel><title>Feed</title>
+				<item>
+					<title>Item 1</title>
+					<link>https://example.com/1</link>
+					<guid>guid-1</guid>
+					<description>Summary body</description>
+				</item>
+			</channel>
+		</rss>
+	`;
+	const parsed: any = parseXml(rss);
+	assertEquals(parsed.items[0].id, 'guid-1');
+	assertEquals(parsed.items[0].guid, 'guid-1');
+	assertEquals(parsed.items[0].summary, 'Summary body');
+	assertEquals(parsed.items[0].description, 'Summary body');
+
+	let sawSignal = false;
+	const code = `
+		export async function evaluate(_items, host) {
+			const res = await host.fetch('https://example.com/feed.xml');
+			const parsed = await host.parseXml(res.body);
+			const els = await host.queryHtml('<div><p class="hi">Hello</p></div>', '.hi');
+			return [{
+				createTiddler: {
+					title: 'Parsed: ' + parsed.items[0].guid,
+					text: els[0].text + ' | ' + parsed.items[0].description,
+				},
+			}];
+		}
+	`;
+	const out = await runSandboxedWatcher(code, [], 'example.com', {}, {
+		timeoutMs: 2000,
+		resolveDnsFn: (_, t) => Promise.resolve(t === 'A' ? ['93.184.216.34'] : []),
+		fetchFn: (_url, init) => {
+			sawSignal = init?.signal instanceof AbortSignal;
+			return Promise.resolve(new Response(rss, { status: 200 }));
+		},
+	});
+	assertEquals(sawSignal, true);
+	assertEquals(out.results[0].createTiddler?.title, 'Parsed: guid-1');
+	assertEquals(out.results[0].createTiddler?.text, 'Hello | Summary body');
+
+	const src = Deno.readTextFileSync('./server/watcher_runner.ts');
+	assertEquals(src.includes('allowHost: true'), true);
 });

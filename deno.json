@@ -3,8 +3,8 @@
 		"build": "TIDDLYWIKI_THEME_PATH=themes TIDDLYWIKI_PLUGIN_PATH=plugins deno run --allow-env --allow-read --allow-write=output npm:tiddlywiki@5.4.1 --build",
 		"build:default-app": "deno run -A scripts/build_default_app.ts",
 		"build:all": "deno task build && deno task build:default-app",
-		"test": "deno test -A server/",
-		"fmt": "deno fmt --ignore='**/*.css' plugins server"
+		"test": "deno test -A server/ plugins/",
+		"fmt": "deno fmt --ignore='**/*.css' plugins server scripts tiddlers"
 	},
 	"fmt": {
 		"useTabs": true,
@@ -20,8 +20,7 @@
 		"@std/encoding/base64url": "jsr:@std/encoding@^1.0.0/base64url",
 		"argon2ian": "https://deno.land/x/argon2ian@2.0.0/src/argon2.ts",
 		"brotli": "https://deno.land/x/brotli@0.1.7/mod.ts",
-		"cliffy/prompt/secret": "https://deno.land/x/cliffy@v0.25.7/prompt/secret.ts",
-		"sqlite": "https://deno.land/x/sqlite@v3.9.0/mod.ts"
+		"cliffy/prompt/secret": "https://deno.land/x/cliffy@v0.25.7/prompt/secret.ts"
 	},
 	"lint": {
 		"rules": {

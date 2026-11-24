@@ -25,8 +25,11 @@ export async function listen(args: any) {
 			// directory may already exist or cannot be created
 		}
 	}
+	const allowCustomAppUpload = envvar('ALLOW_CUSTOM_APP_UPLOAD') !== 'false';
 	const db = new SQLiteDatastore(dbPath);
-	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath, vapidSubject);
+	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath, vapidSubject, {
+		allowCustomAppUpload,
+	});
 	await app.ensureVapidKeys();
 	await app.loadDefaultApp();
 	const schedulerIntervalMs = Number(args.schedulerinterval ?? envvar('SCHEDULER_INTERVAL_MS') ?? 30_000);
@@ -38,10 +41,10 @@ export async function listen(args: any) {
 
 	if (socketPath) {
 		console.log('Listening on socket:', socketPath);
-		await Deno.serve({ path: socketPath }, (req) => app.handle(req)).finished;
+		await Deno.serve({ path: socketPath }, (req, info) => app.handle(req, info)).finished;
 	} else {
 		console.log(`Listening on http://${hostname ?? '0.0.0.0'}:${port}`);
-		await Deno.serve({ port, hostname }, (req) => app.handle(req)).finished;
+		await Deno.serve({ port, hostname }, (req, info) => app.handle(req, info)).finished;
 	}
 }
 

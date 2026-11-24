@@ -1,4 +1,4 @@
-import { assert, assertEquals } from 'https://deno.land/std@0.192.0/testing/asserts.ts';
+import { assertEquals } from '@std/assert';
 import { SQLiteDatastore } from './sqlite.ts';
 import { TiddlyPWASyncApp } from './app.ts';
 

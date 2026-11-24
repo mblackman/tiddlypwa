@@ -249,9 +249,9 @@ Deno.test('schema migration from version 1 to 2 preserves data and allows multi-
 	// Run migration
 	ds.migrate();
 
-	// Verify user_version is now 3
+	// Verify user_version is now 4
 	const ver = ds.query('PRAGMA user_version')[0][0] as number;
-	assertEquals(ver, 3);
+	assertEquals(ver, 4);
 
 	// Verify migrated row exists
 	const rows = [...ds.tiddlersChangedSince('wiki1', new Date(0))];
@@ -616,4 +616,179 @@ Deno.test('wiki asset serving: rejects uploads exceeding limits or malformed inp
 	assertEquals(emptyNameRes.error, 'EPROTO');
 
 	await deleteWiki(tok);
+});
+
+Deno.test('P0-2: op verify_auth validates authcode without creating tiddlers', async () => {
+	const tok = await createWiki();
+
+	// Before any authcode is stored on server, verify_auth reports hasAuthcode: false
+	const freshRes = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'verify_auth', token: tok, authcode: 'first-code' }),
+		}),
+	);
+	assertEquals(freshRes.status, 200);
+	assertEquals(await freshRes.json(), { ok: true, hasAuthcode: false });
+
+	// Bind authcode via sync
+	await sync(tok, 'real-authcode', new Date(), new Date(0), []);
+
+	// Matching authcode succeeds
+	const okRes = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'verify_auth', token: tok, authcode: 'real-authcode' }),
+		}),
+	);
+	assertEquals(okRes.status, 200);
+	assertEquals(await okRes.json(), { ok: true, hasAuthcode: true });
+
+	// Wrong authcode is rejected with 401 EAUTH
+	const badRes = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'verify_auth', token: tok, authcode: 'wrong-authcode' }),
+		}),
+	);
+	assertEquals(badRes.status, 401);
+	assertEquals(await badRes.json(), { error: 'EAUTH' });
+
+	await deleteWiki(tok);
+});
+
+Deno.test('Piece 3: uploadapp allowlists app filenames, enforces ctypes, and respects allowCustomAppUpload', async () => {
+	const tok = await createWiki();
+	const prefix = tok.slice(0, tok.length / 2);
+
+	// Reject arbitrary filenames
+	for (const badName of ['evil.html', '../app.html', 'shell.svg']) {
+		const res = await api({
+			op: 'uploadapp',
+			token: tok,
+			files: { [badName]: { body: '<svg/>', ctype: 'image/svg+xml' } },
+		});
+		assertEquals(res.error, 'EPROTO');
+	}
+
+	// Enforce canonical content-type even if client passes spoofed ctype
+	const okRes = await api({
+		op: 'uploadapp',
+		token: tok,
+		files: {
+			'app.html': { body: '<!doctype html><html>ok</html>', ctype: 'application/x-evil' },
+			'sw.js': { body: '// sw', ctype: 'text/html' },
+		},
+	});
+	assertEquals(okRes.urlprefix, `${prefix}/`);
+
+	const htmlResp = await app.handle(new Request(`http://example.com/${prefix}/app.html`));
+	assertEquals(htmlResp.status, 200);
+	assertEquals(htmlResp.headers.get('content-type'), 'text/html; charset=utf-8');
+	assertEquals(htmlResp.headers.get('x-content-type-options'), 'nosniff');
+	assertEquals(htmlResp.headers.get('referrer-policy'), 'no-referrer');
+	assertEquals(htmlResp.headers.get('x-frame-options'), 'SAMEORIGIN');
+
+	const swResp = await app.handle(new Request(`http://example.com/${prefix}/sw.js`));
+	assertEquals(swResp.status, 200);
+	assertEquals(swResp.headers.get('content-type'), 'application/javascript; charset=utf-8');
+	assertEquals(swResp.headers.get('x-content-type-options'), 'nosniff');
+
+	// Disabled custom uploads returns 403 EFORBIDDEN
+	const lockedApp = new TiddlyPWASyncApp(
+		new SQLiteDatastore(),
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+		'',
+		undefined,
+		{ allowCustomAppUpload: false },
+	);
+	const created: any = await lockedApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({ tiddlypwa: 1, op: 'create', atoken: 'test' }),
+		}),
+	).then((r) => r.json());
+	const blockedResp = await lockedApp.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'uploadapp',
+				token: created.token,
+				files: { 'app.html': { body: '<html/>', ctype: 'text/html' } },
+			}),
+		}),
+	);
+	assertEquals(blockedResp.status, 403);
+	assertEquals(await blockedResp.json(), { error: 'EFORBIDDEN' });
+
+	await deleteWiki(tok);
+});
+
+Deno.test('Piece 3: monitor endpoint supports halftoken + authcode without exposing full token', async () => {
+	const tok = await createWiki();
+	const half = tok.slice(0, Math.floor(tok.length / 2));
+
+	// Before authcode is set on wiki, halftoken monitor is rejected
+	const unauth = app.handleMonitor(new URLSearchParams({ halftoken: half, authcode: 'abc', browserToken: 'b1' }), 20);
+	assertEquals(unauth.status, 401);
+
+	await sync(tok, 'monitor-secret', new Date(), new Date(0), []);
+
+	// Wrong authcode is rejected
+	const bad = app.handleMonitor(new URLSearchParams({ halftoken: half, authcode: 'wrong', browserToken: 'b1' }), 20);
+	assertEquals(bad.status, 401);
+
+	// Valid halftoken + authcode streams SSE events
+	const ok = app.handleMonitor(
+		new URLSearchParams({ halftoken: half, authcode: 'monitor-secret', browserToken: 'b1' }),
+		20,
+	);
+	assertEquals(ok.status, 200);
+	const reader = ok.body!.getReader();
+	const first = new TextDecoder().decode((await reader.read()).value);
+	assertEquals(first.includes('event: hi'), true);
+	await reader.cancel();
+
+	await deleteWiki(tok);
+});
+
+Deno.test('Piece 3: admin homePage includes viewport meta, #token links, no ?token= links, and dynamic version', async () => {
+	const resp = await app.handle(new Request('http://example.com/'));
+	assertEquals(resp.status, 200);
+	const html = await resp.text();
+	assertEquals(html.includes('<meta name="viewport"'), true);
+	assertEquals(html.includes('#token='), true);
+	assertEquals(html.includes('?token='), false);
+	assertEquals(html.includes("if (!bytes) return '0 B'"), true);
+});
+
+Deno.test('P1-6: admin authentication rate-limits repeated failed attempts per IP with 429 ERATELIMIT', async () => {
+	const rlApp = new TiddlyPWASyncApp(
+		new SQLiteDatastore(),
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const badReq = (ip: string, atoken = 'wrong') =>
+		rlApp.handle(
+			new Request('http://example.com/tid.dly', {
+				method: 'POST',
+				headers: { 'x-forwarded-for': ip },
+				body: JSON.stringify({ tiddlypwa: 1, op: 'list', atoken }),
+			}),
+		);
+
+	for (let i = 0; i < 5; i++) {
+		const res = await badReq('198.51.100.10');
+		assertEquals(res.status, 401);
+	}
+	const locked = await badReq('198.51.100.10');
+	assertEquals(locked.status, 429);
+	assertEquals(locked.headers.has('retry-after'), true);
+	assertEquals(await locked.json(), { error: 'ERATELIMIT' });
+
+	// Different IP is still allowed and valid auth succeeds
+	const otherOk = await badReq('198.51.100.11', 'test');
+	assertEquals(otherOk.status, 200);
 });

@@ -294,10 +294,17 @@ export async function tickWatchers(
 
 export function startSchedulerLoop(app: TiddlyPWASyncApp, intervalMs = 30_000): { stop: () => void } {
 	let running = false;
+	let lastTombstonePruneMs = 0;
+	const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 	const timer = setInterval(async () => {
 		if (running) return;
 		running = true;
 		try {
+			const nowMs = Date.now();
+			if (nowMs - lastTombstonePruneMs >= 86_400_000) {
+				lastTombstonePruneMs = nowMs;
+				app.db.pruneTombstones(nowMs - TOMBSTONE_TTL_MS);
+			}
 			const vapid = await app.ensureVapidKeys();
 			await tickScheduledNotifications(app.db, vapid, {
 				subject: app.vapidSubject,

@@ -776,3 +776,137 @@ Deno.test('Conflict Snowball Prevention: In-flight typing during a conflict adva
 
 	db.deleteWiki(tok);
 });
+
+Deno.test('P0-3: concurrent offline creation with explicit baseMtime: null triggers conflict instead of LWW overwrite', async () => {
+	const db = new SQLiteDatastore();
+	const app = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const crypto = await createClientCrypto();
+	const tok = 'test-offline-create-collision';
+	db.createWiki(tok);
+
+	const thash = await crypto.titleHash('SameNote');
+	const thashB64 = encodeBase64(thash);
+	const devAPayload = await crypto.encrypt({ title: 'SameNote', text: 'Device A version' });
+	const devBPayload = await crypto.encrypt({ title: 'SameNote', text: 'Device B offline version' });
+	const authcode = encodeBase64(await crypto.titleHash(tok));
+
+	// Device A creates offline and syncs first (at older timestamp t1)
+	const t1 = new Date(Date.now() - 10_000).toISOString();
+	const respA = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tok,
+				authcode,
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [{
+					thash: thashB64,
+					iv: encodeBase64(devAPayload.iv),
+					ct: encodeBase64(devAPayload.ct),
+					mtime: t1,
+					deleted: false,
+					baseMtime: null,
+				}],
+			}),
+		}),
+	);
+	const jsonA = await respA.json();
+	assertEquals(jsonA.conflicts ?? [], []);
+
+	// Device B created the same title offline independently (newer mtime t2 > server mtime, STILL baseMtime: null!)
+	const t2 = new Date(Date.now() + 5_000).toISOString();
+	const respB = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tok,
+				authcode,
+				now: new Date().toISOString(),
+				lastSync: new Date(0).toISOString(),
+				clientChanges: [{
+					thash: thashB64,
+					iv: encodeBase64(devBPayload.iv),
+					ct: encodeBase64(devBPayload.ct),
+					mtime: t2,
+					deleted: false,
+					baseMtime: null,
+				}],
+			}),
+		}),
+	);
+	const jsonB = await respB.json();
+	assertEquals(jsonB.conflicts, [thashB64]);
+
+	// Verify server still holds Device A's version untouched
+	const stored = db.getTiddler(tok, thash);
+	const dec = await crypto.decrypt(stored!.iv!, stored!.ct!);
+	assertEquals(dec?.text, 'Device A version');
+
+	db.deleteWiki(tok);
+});
+
+Deno.test('P2-6: pruneTombstones deletes expired tombstones and triggers tombstoneReset for stale clients', async () => {
+	const db = new SQLiteDatastore();
+	const app = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+	);
+	const crypto = await createClientCrypto();
+	const tok = 'test-tombstone-compaction';
+	db.createWiki(tok);
+
+	const oldHash = await crypto.titleHash('OldDeleted');
+	const newHash = await crypto.titleHash('RecentDeleted');
+	const liveHash = await crypto.titleHash('LiveTiddler');
+	const now = Date.now();
+	const cutoff = now - 90 * 24 * 60 * 60 * 1000;
+
+	db.upsertTiddler(tok, { thash: oldHash, deleted: true, mtime: new Date(cutoff - 10_000) });
+	db.upsertTiddler(tok, { thash: newHash, deleted: true, mtime: new Date(now - 1_000) });
+	const liveEnc = await crypto.encrypt({ title: 'LiveTiddler', text: 'alive' });
+	db.upsertTiddler(tok, {
+		thash: liveHash,
+		iv: liveEnc.iv,
+		ct: liveEnc.ct,
+		deleted: false,
+		mtime: new Date(now - 5_000),
+	});
+
+	const deletedCount = (db as any).pruneTombstones(cutoff);
+	assertEquals(deletedCount, 1);
+	assertEquals(db.getTiddler(tok, oldHash), undefined);
+	assertNotEquals(db.getTiddler(tok, newHash), undefined);
+	assertNotEquals(db.getTiddler(tok, liveHash), undefined);
+	assertEquals((db as any).getTombstoneHorizon() >= cutoff, true);
+
+	// Client syncing with a non-zero lastSync older than tombstone horizon receives tombstoneReset: true
+	const resp = await app.handle(
+		new Request('http://example.com/tid.dly', {
+			method: 'POST',
+			body: JSON.stringify({
+				tiddlypwa: 1,
+				op: 'sync',
+				token: tok,
+				authcode: encodeBase64(await crypto.titleHash(tok)),
+				now: new Date(now).toISOString(),
+				lastSync: new Date(cutoff - 50_000).toISOString(),
+				clientChanges: [],
+			}),
+		}),
+	);
+	const json = await resp.json();
+	assertEquals(json.tombstoneReset, true);
+	assertEquals(json.serverChanges.some((c: any) => c.thash === encodeBase64(liveHash)), true);
+
+	db.deleteWiki(tok);
+});
