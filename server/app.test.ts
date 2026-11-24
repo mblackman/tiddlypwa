@@ -1288,3 +1288,85 @@ Deno.test('Batch 5 shutdown: app.shutdown closes active SSE monitor streams clea
 	const closed = await reader.read();
 	assertEquals(closed.done, true);
 });
+
+Deno.test('Batch 6 ops: healthz, strict basepath, x-accel-buffering, CORS, and error boundary', async () => {
+	const db = new SQLiteDatastore();
+	const customOrigin = 'https://app.example.com';
+	const appWithBase = new TiddlyPWASyncApp(
+		db,
+		'q6kQ8SNKeaVVQDbhb7TgyqdTp8KAO31rU-6AGT1xG0o',
+		'ZnPOVo2E_oWm71aQ-eOX9U3-gIE2hR6nfksboNcLNPQ',
+		'mywiki/',
+		undefined,
+		{ corsOrigin: customOrigin },
+	);
+	assertEquals(appWithBase.basepath, '/mywiki');
+
+	// Requests outside normalized basepath must 404
+	const rootResp = await appWithBase.handle(new Request('http://example.com/'));
+	assertEquals(rootResp.status, 404);
+	assertEquals(rootResp.headers.get('access-control-allow-origin'), customOrigin);
+	const outApiResp = await appWithBase.handle(
+		new Request('http://example.com/tid.dly', { method: 'POST', body: '{}' }),
+	);
+	assertEquals(outApiResp.status, 404);
+	// Prefix trap /mywiki2 must also 404
+	const prefixTrapResp = await appWithBase.handle(new Request('http://example.com/mywiki2/healthz'));
+	assertEquals(prefixTrapResp.status, 404);
+
+	// /mywiki/healthz returns 200 with no-store
+	const healthOk = await appWithBase.handle(new Request('http://example.com/mywiki/healthz'));
+	assertEquals(healthOk.status, 200);
+	assertEquals(healthOk.headers.get('cache-control'), 'no-store');
+	assertEquals(await healthOk.json(), { ok: true });
+
+	// SSE monitor includes x-accel-buffering: no and custom CORS origin
+	const tok = 'wiki-b6-123456789012345678901234567890123456';
+	db.createWiki(tok);
+	const sseResp = await appWithBase.handle(
+		new Request(`http://example.com/mywiki/tid.dly?op=monitor&token=${tok}&browserToken=b1`),
+	);
+	assertEquals(sseResp.status, 200);
+	assertEquals(sseResp.headers.get('x-accel-buffering'), 'no');
+	assertEquals(sseResp.headers.get('access-control-allow-origin'), customOrigin);
+	await sseResp.body?.cancel();
+
+	// handleAppFile returns custom CORS header (both 200 and 304)
+	await appWithBase.loadDefaultApp();
+	const half = tok.slice(0, tok.length / 2);
+	const appHtmlResp = await appWithBase.handle(new Request(`http://example.com/mywiki/${half}/app.html`));
+	assertEquals(appHtmlResp.status, 200);
+	assertEquals(appHtmlResp.headers.get('access-control-allow-origin'), customOrigin);
+	const etag = appHtmlResp.headers.get('etag')!;
+	await appHtmlResp.body?.cancel();
+	const app304 = await appWithBase.handle(
+		new Request(`http://example.com/mywiki/${half}/app.html`, { headers: { 'if-none-match': etag } }),
+	);
+	assertEquals(app304.status, 304);
+	assertEquals(app304.headers.get('access-control-allow-origin'), customOrigin);
+
+	// Error boundary: SQLITE_BUSY -> 503 EBUSY with CORS; generic error -> 500 EINTERNAL with CORS
+	const origGetWiki = db.getWikiByPrefix.bind(db);
+	db.getWikiByPrefix = () => {
+		throw new Error('SQLITE_BUSY: database is locked');
+	};
+	const busyResp = await appWithBase.handle(new Request(`http://example.com/mywiki/${half}/app.html`));
+	assertEquals(busyResp.status, 503);
+	assertEquals(busyResp.headers.get('access-control-allow-origin'), customOrigin);
+	assertEquals(await busyResp.json(), { error: 'EBUSY' });
+
+	db.getWikiByPrefix = () => {
+		throw new Error('unexpected crash');
+	};
+	const errResp = await appWithBase.handle(new Request(`http://example.com/mywiki/${half}/app.html`));
+	assertEquals(errResp.status, 500);
+	assertEquals(errResp.headers.get('access-control-allow-origin'), customOrigin);
+	assertEquals(await errResp.json(), { error: 'EINTERNAL' });
+	db.getWikiByPrefix = origGetWiki;
+
+	// /healthz returns 503 when healthCheck() returns false
+	db.close();
+	const healthFail = await appWithBase.handle(new Request('http://example.com/mywiki/healthz'));
+	assertEquals(healthFail.status, 503);
+	assertEquals(await healthFail.json(), { ok: false });
+});

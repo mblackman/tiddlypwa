@@ -5,8 +5,20 @@ services:
     container_name: tiddlypwa
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
+      # Optional: CORS_ORIGIN=* (set explicit origin if reverse-proxied cross-origin)
+      # Optional: TRUST_PROXY=true (only when behind a trusted reverse proxy)
+      # Optional: ALLOW_CUSTOM_APP_UPLOAD=false (keep disabled unless testing custom builds)
+      # Optional: BASE_PATH=/wiki
+      # Optional: MAX_BODY_BYTES=67108864
       - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH}
       - ADMIN_PASSWORD_SALT=${ADMIN_PASSWORD_SALT}
       - DB_PATH=/data/pwa.db

@@ -47,11 +47,13 @@ export async function listen(args: any) {
 	const maxBodyBytes = maxBodyEnv !== undefined && Number.isFinite(Number(maxBodyEnv)) && Number(maxBodyEnv) > 0
 		? Number(maxBodyEnv)
 		: undefined;
+	const corsOrigin = args.corsorigin ?? envvar('CORS_ORIGIN');
 	const db = new SQLiteDatastore(dbPath);
 	const app = new TiddlyPWASyncApp(db, adminpwsalt, adminpwhash, basepath, vapidSubject, {
 		allowCustomAppUpload,
 		trustProxy,
 		maxBodyBytes,
+		corsOrigin,
 	});
 	await app.ensureVapidKeys();
 	await app.loadDefaultApp();
